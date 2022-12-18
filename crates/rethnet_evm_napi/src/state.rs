@@ -5,7 +5,7 @@ use std::sync::{
 
 use napi::{bindgen_prelude::*, JsFunction, JsObject, NapiRaw, Status};
 use napi_derive::napi;
-use rethnet_eth::{Address, H256, U256};
+use rethnet_eth::{Address, B256, U256};
 use rethnet_evm::{
     db::{AsyncDatabase, LayeredDatabase, RethnetLayer, SyncDatabase},
     AccountInfo, Bytecode, DatabaseDebug, HashMap,
@@ -140,7 +140,7 @@ impl StateManager {
 
     #[napi]
     pub async fn get_code_by_hash(&mut self, code_hash: Buffer) -> napi::Result<Buffer> {
-        let code_hash = H256::from_slice(&code_hash);
+        let code_hash = B256::from_slice(&code_hash);
 
         self.db.code_by_hash(code_hash).await.map_or_else(
             |e| Err(napi::Error::new(Status::GenericFailure, e.to_string())),
@@ -168,23 +168,8 @@ impl StateManager {
     }
 
     #[napi]
-    pub async fn insert_block(
-        &mut self,
-        block_number: BigInt,
-        block_hash: Buffer,
-    ) -> napi::Result<()> {
-        let block_number = BigInt::try_cast(block_number)?;
-        let block_hash = H256::from_slice(&block_hash);
-
-        self.db
-            .insert_block(block_number, block_hash)
-            .await
-            .map_err(|e| napi::Error::new(Status::GenericFailure, e.to_string()))
-    }
-
-    #[napi]
     pub async fn make_snapshot(&mut self) -> Buffer {
-        self.db.make_snapshot().await.as_ref().into()
+        <B256 as AsRef<[u8]>>::as_ref(&self.db.make_snapshot().await).into()
     }
 
     #[napi(ts_return_type = "Promise<void>")]
@@ -287,7 +272,7 @@ impl StateManager {
 
     #[napi]
     pub async fn remove_snapshot(&mut self, state_root: Buffer) -> bool {
-        let state_root = H256::from_slice(&state_root);
+        let state_root = B256::from_slice(&state_root);
 
         self.db.remove_snapshot(state_root).await
     }
@@ -311,7 +296,7 @@ impl StateManager {
 
     #[napi]
     pub async fn set_state_root(&mut self, state_root: Buffer) -> napi::Result<()> {
-        let state_root = H256::from_slice(&state_root);
+        let state_root = B256::from_slice(&state_root);
 
         self.db
             .set_state_root(&state_root)

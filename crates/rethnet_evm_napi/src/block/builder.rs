@@ -8,7 +8,8 @@ use napi_derive::napi;
 use rethnet_eth::{Address, U256};
 
 use crate::{
-    cast::TryCast, state::StateManager, transaction::Transaction, Config, ExecutionResult,
+    blockchain::Blockchain, cast::TryCast, state::StateManager, transaction::Transaction, Config,
+    ExecutionResult,
 };
 
 use super::{BlockConfig, BlockHeader};
@@ -22,6 +23,7 @@ pub struct BlockBuilder {
 impl BlockBuilder {
     #[napi]
     pub async fn new(
+        blockchain: &Blockchain,
         state_manager: &StateManager,
         config: Config,
         parent: BlockHeader,
@@ -31,10 +33,15 @@ impl BlockBuilder {
         let parent = parent.try_into()?;
         let block = block.try_into()?;
 
-        let builder =
-            rethnet_evm::BlockBuilder::new(state_manager.db.clone(), config, parent, block)
-                .await
-                .map_err(|e| napi::Error::new(Status::GenericFailure, e.to_string()))?;
+        let builder = rethnet_evm::BlockBuilder::new(
+            blockchain.as_inner().clone(),
+            state_manager.db.clone(),
+            config,
+            parent,
+            block,
+        )
+        .await
+        .map_err(|e| napi::Error::new(Status::GenericFailure, e.to_string()))?;
 
         Ok(Self {
             builder: Some(builder),
