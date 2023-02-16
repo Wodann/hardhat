@@ -28,6 +28,9 @@ pub use crate::{
 /// Types for managing Ethereum blockchain
 pub mod blockchain;
 
+/// Types used for debugging EVM calls
+pub mod debug;
+
 /// Database types for managing Ethereum state
 pub mod state;
 
@@ -35,6 +38,7 @@ pub mod state;
 pub mod trace;
 
 mod block;
+
 pub(crate) mod evm;
 mod inspector;
 pub(crate) mod random;
