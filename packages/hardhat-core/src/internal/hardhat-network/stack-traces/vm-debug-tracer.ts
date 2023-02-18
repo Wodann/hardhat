@@ -1,20 +1,22 @@
-import type { AfterTxEvent, VM } from "@nomicfoundation/ethereumjs-vm";
-import type { EVMResult } from "@nomicfoundation/ethereumjs-evm";
-import type { InterpreterStep } from "@nomicfoundation/ethereumjs-evm/dist/interpreter";
-import type { Message } from "@nomicfoundation/ethereumjs-evm/dist/message";
-import { TypedTransaction } from "@nomicfoundation/ethereumjs-tx";
+import type {
+  TracingMessage,
+  TracingMessageResult,
+  TracingStep,
+} from "rethnet-evm";
+import type { RunTxResult, VMAdapter } from "../provider/vm/vm-adapter";
+
 import {
   Address,
   bufferToBigInt,
   setLengthLeft,
   toBuffer,
 } from "@nomicfoundation/ethereumjs-util";
-
 import { assertHardhatInvariant } from "../../core/errors";
 import { RpcDebugTracingConfig } from "../../core/jsonrpc/types/input/debugTraceTransaction";
 import { InvalidInputError } from "../../core/providers/errors";
 import { RpcDebugTraceOutput, RpcStructLog } from "../provider/output";
 import * as BigIntUtils from "../../util/bigint";
+import { ExitCode } from "../provider/vm/exit";
 
 /* eslint-disable @nomiclabs/hardhat-internal-rules/only-hardhat-error */
 
@@ -36,7 +38,7 @@ type Storage = Record<string, string>;
 interface DebugMessage {
   structLogs: Array<StructLog | DebugMessage>;
   to: string;
-  result?: EVMResult;
+  result?: TracingMessageResult;
 }
 
 type NestedStructLogs = Array<StructLog | NestedStructLogs>;
@@ -51,99 +53,35 @@ const EMPTY_MEMORY_WORD = "0".repeat(64);
 
 export class VMDebugTracer {
   private _lastTrace?: RpcDebugTraceOutput;
-  private _config: RpcDebugTracingConfig;
 
   private _messages: DebugMessage[] = [];
   private _addressToStorage: Record<string, Storage> = {};
 
   private _error: any;
 
-  constructor(private readonly _vm: VM) {
-    this._beforeMessageHandler = this._beforeMessageHandler.bind(this);
-    this._afterMessageHandler = this._afterMessageHandler.bind(this);
-    this._beforeTxHandler = this._beforeTxHandler.bind(this);
-    this._stepHandler = this._stepHandler.bind(this);
-    this._afterTxHandler = this._afterTxHandler.bind(this);
-  }
+  constructor(
+    private readonly _vm: VMAdapter,
+    private _config: RpcDebugTracingConfig
+  ) {}
 
-  /**
-   * Run the `action` callback and trace its execution
-   */
-  public async trace(
-    action: () => Promise<void>,
-    config: RpcDebugTracingConfig
-  ): Promise<RpcDebugTraceOutput> {
-    try {
-      this._enableTracing(config);
-      this._config = config;
-
-      await action();
-
-      if (this._error !== undefined) {
-        throw this._error;
-      }
-
-      return this._getDebugTrace();
-    } finally {
-      this._disableTracing();
+  public getDebugTrace(): RpcDebugTraceOutput {
+    if (this._error !== undefined) {
+      throw this._error;
     }
-  }
-
-  private _enableTracing(config: RpcDebugTracingConfig) {
-    assertHardhatInvariant(
-      this._vm.evm.events !== undefined,
-      "EVM should have an 'events' property"
-    );
-
-    this._vm.events.on("beforeTx", this._beforeTxHandler);
-
-    this._vm.evm.events.on("beforeMessage", this._beforeMessageHandler);
-    this._vm.evm.events.on("step", this._stepHandler);
-    this._vm.evm.events.on("afterMessage", this._afterMessageHandler);
-
-    this._vm.events.on("afterTx", this._afterTxHandler);
-
-    this._config = config;
-  }
-
-  private _disableTracing() {
-    assertHardhatInvariant(
-      this._vm.evm.events !== undefined,
-      "EVM should have an 'events' property"
-    );
-
-    this._vm.events.removeListener("beforeTx", this._beforeTxHandler);
-
-    this._vm.evm.events.removeListener(
-      "beforeMessage",
-      this._beforeMessageHandler
-    );
-    this._vm.evm.events.removeListener("step", this._stepHandler);
-    this._vm.evm.events.removeListener(
-      "afterMessage",
-      this._afterMessageHandler
-    );
-    this._vm.events.removeListener("afterTx", this._afterTxHandler);
-    this._config = undefined;
-  }
-
-  private _getDebugTrace(): RpcDebugTraceOutput {
     if (this._lastTrace === undefined) {
       throw new Error(
         "No debug trace available. Please run the transaction first"
       );
     }
+
     return this._lastTrace;
   }
 
-  private async _beforeTxHandler(_tx: TypedTransaction, next: any) {
-    this._lastTrace = undefined;
-    this._messages = [];
-    this._addressToStorage = {};
-    next();
-  }
+  public async addBeforeMessage(message: TracingMessage) {
+    if (this._error !== undefined) {
+      return;
+    }
 
-  private async _beforeMessageHandler(message: Message, next: any) {
     const debugMessage: DebugMessage = {
       structLogs: [],
       to: message.to?.toString() ?? "",
@@ -156,12 +94,20 @@ export class VMDebugTracer {
     }
 
     this._messages.push(debugMessage);
-
-    next();
   }
 
-  private async _stepHandler(step: InterpreterStep, next: any) {
+  public async addStep(step: TracingStep) {
+    if (this._error !== undefined) {
+      return;
+    }
+
     try {
+      if (step.memory === undefined) {
+        throw new Error(`Assertion error: step.memory cannot be undefined`);
+      }
+      if (step.stack === undefined) {
+        throw new Error(`Assertion error: step.stack cannot be undefined`);
+      }
       assertHardhatInvariant(
         this._messages.length > 0,
         "Step handler should be called after at least one beforeMessage handler"
@@ -171,15 +117,16 @@ export class VMDebugTracer {
       this._messages[this._messages.length - 1].structLogs.push(structLog);
     } catch (e: any) {
       // errors thrown in event handlers are lost, so we save this error to
-      // re-throw it in the `trace` function
+      // re-throw it in the `getDebugTrace` function
       this._error = e;
-      this._disableTracing();
     }
-
-    next();
   }
 
-  private async _afterMessageHandler(result: EVMResult, next: any) {
+  public async addAfterMessage(result: TracingMessageResult) {
+    if (this._error !== undefined) {
+      return;
+    }
+
     const lastMessage = this._messages[this._messages.length - 1];
 
     lastMessage.result = result;
@@ -187,11 +134,13 @@ export class VMDebugTracer {
     if (this._messages.length > 1) {
       this._messages.pop();
     }
-
-    next();
   }
 
-  private async _afterTxHandler(result: AfterTxEvent, next: any) {
+  public async addAfterTx(result: RunTxResult) {
+    if (this._error !== undefined) {
+      return;
+    }
+
     const { default: flattenDeep } = await import("lodash/flattenDeep");
     const topLevelMessage = this._messages[0];
 
@@ -222,21 +171,16 @@ export class VMDebugTracer {
     );
 
     // geth does this for some reason
-    if (
-      rpcStructLogs.length > 0 &&
-      result.execResult.exceptionError?.error === "out of gas"
-    ) {
+    if (rpcStructLogs.length > 0 && result.exit.kind === ExitCode.OUT_OF_GAS) {
       rpcStructLogs[rpcStructLogs.length - 1].error = {};
     }
 
     this._lastTrace = {
-      gas: Number(result.totalGasSpent),
-      failed: result.execResult.exceptionError !== undefined,
-      returnValue: result.execResult.returnValue.toString("hex"),
+      gas: Number(result.gasUsed),
+      failed: result.exit.isError(),
+      returnValue: result.returnValue.toString("hex"),
       structLogs: rpcStructLogs,
     };
-
-    next();
   }
 
   private async _messageToNestedStructLogs(
@@ -314,7 +258,7 @@ export class VMDebugTracer {
     return nestedStructLogs;
   }
 
-  private _getMemory(step: InterpreterStep): string[] {
+  private _getMemory(step: TracingStep): string[] {
     const memory = Buffer.from(step.memory)
       .toString("hex")
       .match(/.{1,64}/g);
@@ -324,39 +268,39 @@ export class VMDebugTracer {
     return result;
   }
 
-  private _getStack(step: InterpreterStep): string[] {
+  private _getStack(step: TracingStep): string[] {
     const stack = step.stack
       .slice()
       .map((el: bigint) => el.toString(16).padStart(64, "0"));
     return stack;
   }
 
-  private async _stepToStructLog(step: InterpreterStep): Promise<StructLog> {
+  private async _stepToStructLog(step: TracingStep): Promise<StructLog> {
     const memory = this._getMemory(step);
     const stack = this._getStack(step);
 
-    let gasCost = step.opcode.fee;
+    let gasCost = step.gasCost;
 
-    let op = step.opcode.name;
+    let op = step.opcode;
     let error: object | undefined;
 
     const storage: Storage = {};
 
-    if (step.opcode.name === "SLOAD") {
-      const address = step.address;
+    if (step.opcode === "SLOAD") {
+      const address = new Address(step.contractAddress);
       const [keyBuffer] = this._getFromStack(stack, 1);
       const key: Buffer = setLengthLeft(keyBuffer, 32);
 
       const storageValue = await this._getContractStorage(address, key);
 
       storage[toWord(key)] = toWord(storageValue);
-    } else if (step.opcode.name === "SSTORE") {
+    } else if (step.opcode === "SSTORE") {
       const [keyBuffer, valueBuffer] = this._getFromStack(stack, 2);
       const key = toWord(keyBuffer);
       const storageValue = toWord(valueBuffer);
 
       storage[key] = storageValue;
-    } else if (step.opcode.name === "REVERT") {
+    } else if (step.opcode === "REVERT") {
       const [offsetBuffer, lengthBuffer] = this._getFromStack(stack, 2);
       const length = bufferToBigInt(lengthBuffer);
       const offset = bufferToBigInt(offsetBuffer);
@@ -366,21 +310,21 @@ export class VMDebugTracer {
         length + offset
       );
 
-      gasCost += Number(gasIncrease);
+      gasCost += gasIncrease;
 
       for (let i = 0; i < addedWords; i++) {
         memory.push(EMPTY_MEMORY_WORD);
       }
-    } else if (step.opcode.name === "CREATE2") {
+    } else if (step.opcode === "CREATE2") {
       const [, , memoryUsedBuffer] = this._getFromStack(stack, 3);
       const memoryUsed = bufferToBigInt(memoryUsedBuffer);
       const sha3ExtraCost =
         BigIntUtils.divUp(memoryUsed, 32n) * this._sha3WordGas();
-      gasCost += Number(sha3ExtraCost);
+      gasCost += sha3ExtraCost;
     } else if (
-      step.opcode.name === "CALL" ||
-      step.opcode.name === "STATICCALL" ||
-      step.opcode.name === "DELEGATECALL"
+      step.opcode === "CALL" ||
+      step.opcode === "STATICCALL" ||
+      step.opcode === "DELEGATECALL"
     ) {
       // this is a port of what geth does to compute the
       // gasCost of a *CALL step, with some simplifications
@@ -396,7 +340,7 @@ export class VMDebugTracer {
       ] = this._getFromStack(stack, 6);
 
       // CALL has 7 parameters
-      if (step.opcode.name === "CALL") {
+      if (step.opcode === "CALL") {
         [
           callCostBuffer,
           recipientAddressBuffer,
@@ -435,19 +379,21 @@ export class VMDebugTracer {
         callCost
       );
 
-      gasCost = Number(constantGas + dynamicGas);
-    } else if (step.opcode.name === "CALLCODE") {
+      gasCost = constantGas + dynamicGas;
+    } else if (step.opcode === "CALLCODE") {
       // finding an existing tx that uses CALLCODE or compiling a contract
       // so that it uses this opcode is hard,
       // so we just throw
       throw new InvalidInputError(
         "Transactions that use CALLCODE are not supported by Hardhat's debug_traceTransaction"
       );
-    } else if (step.opcode.name === "INVALID") {
-      const code = await this._getContractCode(step.codeAddress);
+    } else if (step.opcode === "INVALID") {
+      const code = await this._getContractCode(
+        new Address(step.contractAddress)
+      );
 
       if (code.length > step.pc) {
-        const opcodeHex = code[step.pc].toString(16);
+        const opcodeHex = code[Number(step.pc)].toString(16);
         op = `opcode 0x${opcodeHex} not defined`;
       } else {
         // This can happen if there is an invalid opcode in a constructor.
@@ -460,15 +406,15 @@ export class VMDebugTracer {
     }
 
     const structLog: StructLog = {
-      pc: step.pc,
+      pc: Number(step.pc),
       op,
       gas: Number(step.gasLeft),
-      gasCost,
+      gasCost: Number(gasCost),
       depth: step.depth + 1,
       stack,
       memory,
       storage,
-      memSize: Number(step.memoryWordCount),
+      memSize: step.memory.length,
     };
 
     if (error !== undefined) {
@@ -479,43 +425,43 @@ export class VMDebugTracer {
   }
 
   private _memoryGas(): bigint {
-    return this._vm._common.param("gasPrices", "memory");
+    return this._vm.getCommon().param("gasPrices", "memory");
   }
 
   private _sha3WordGas(): bigint {
-    return this._vm._common.param("gasPrices", "sha3Word");
+    return this._vm.getCommon().param("gasPrices", "sha3Word");
   }
 
   private _callConstantGas(): bigint {
-    if (this._vm._common.gteHardfork("berlin")) {
-      return this._vm._common.param("gasPrices", "warmstorageread");
+    if (this._vm.gteHardfork("berlin")) {
+      return this._vm.getCommon().param("gasPrices", "warmstorageread");
     }
 
-    return this._vm._common.param("gasPrices", "call");
+    return this._vm.getCommon().param("gasPrices", "call");
   }
 
   private _callNewAccountGas(): bigint {
-    return this._vm._common.param("gasPrices", "callNewAccount");
+    return this._vm.getCommon().param("gasPrices", "callNewAccount");
   }
 
   private _callValueTransferGas(): bigint {
-    return this._vm._common.param("gasPrices", "callValueTransfer");
+    return this._vm.getCommon().param("gasPrices", "callValueTransfer");
   }
 
   private _quadCoeffDiv(): bigint {
-    return this._vm._common.param("gasPrices", "quadCoeffDiv");
+    return this._vm.getCommon().param("gasPrices", "quadCoeffDiv");
   }
 
   private _isAddressEmpty(address: Address): Promise<boolean> {
-    return this._vm.stateManager.accountIsEmpty(address);
+    return this._vm.accountIsEmpty(address.toBuffer());
   }
 
   private _getContractStorage(address: Address, key: Buffer): Promise<Buffer> {
-    return this._vm.stateManager.getContractStorage(address, key);
+    return this._vm.getContractStorage(address, key);
   }
 
   private _getContractCode(address: Address): Promise<Buffer> {
-    return this._vm.stateManager.getContractCode(address);
+    return this._vm.getContractCode(address);
   }
 
   private async _callDynamicGas(
@@ -526,12 +472,12 @@ export class VMDebugTracer {
     callCost: bigint
   ): Promise<bigint> {
     // The available gas is reduced when the address is cold
-    if (this._vm._common.gteHardfork("berlin")) {
-      const isWarmed = this._vm.eei.isWarmedAddress(address.toBuffer());
+    if (this._vm.gteHardfork("berlin")) {
+      const isWarmed = await this._vm.isWarmedAddress(address.toBuffer());
 
       const coldCost =
-        this._vm._common.param("gasPrices", "coldaccountaccess") -
-        this._vm._common.param("gasPrices", "warmstorageread");
+        this._vm.getCommon().param("gasPrices", "coldaccountaccess") -
+        this._vm.getCommon().param("gasPrices", "warmstorageread");
 
       // This comment is copied verbatim from geth:
       // The WarmStorageReadCostEIP2929 (100) is already deducted in the form of a constant cost, so
@@ -603,6 +549,12 @@ export class VMDebugTracer {
   }
 
   private _getFromStack(stack: string[], count: number): Buffer[] {
+    if (stack.length < count) {
+      throw new Error(
+        `Assertion error: stack has length ${stack.length} but should be at least ${count}`
+      );
+    }
+
     return stack
       .slice(-count)
       .reverse()

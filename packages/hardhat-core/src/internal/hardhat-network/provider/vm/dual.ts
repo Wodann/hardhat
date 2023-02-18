@@ -9,37 +9,26 @@ import {
 } from "@nomicfoundation/ethereumjs-util";
 
 import { assertHardhatInvariant } from "../../../core/errors";
-import { RpcDebugTracingConfig } from "../../../core/jsonrpc/types/input/debugTraceTransaction";
 import {
   isEvmStep,
   isPrecompileTrace,
   MessageTrace,
 } from "../../stack-traces/message-trace";
+import { VMDebugTracer } from "../../stack-traces/vm-debug-tracer";
 import { VMTracer } from "../../stack-traces/vm-tracer";
 import { NodeConfig } from "../node-types";
-import { RpcDebugTraceOutput } from "../output";
 import { HardhatBlockchainInterface } from "../types/HardhatBlockchainInterface";
 
 import { EthereumJSAdapter } from "./ethereumjs";
 import { ExitCode } from "./exit";
 import { RethnetAdapter } from "./rethnet";
-import { RunTxResult, Trace, VMAdapter } from "./vm-adapter";
+import { RunTxResult, VMAdapter } from "./vm-adapter";
 
 /* eslint-disable @nomiclabs/hardhat-internal-rules/only-hardhat-error */
 /* eslint-disable @typescript-eslint/restrict-template-expressions */
 
 function _printEthereumJSTrace(trace: any) {
   console.log(JSON.stringify(trace, null, 2));
-}
-
-function _printRethnetTrace(trace: any) {
-  console.log(
-    JSON.stringify(
-      trace,
-      (key, value) => (typeof value === "bigint" ? value.toString() : value),
-      2
-    )
-  );
 }
 
 export class DualModeAdapter implements VMAdapter {
@@ -90,7 +79,7 @@ export class DualModeAdapter implements VMAdapter {
     tx: TypedTransaction,
     blockContext: Block,
     forceBaseFeeZero?: boolean
-  ): Promise<[RunTxResult, Trace]> {
+  ): Promise<RunTxResult> {
     const ethereumJSResultPromise = this._ethereumJSAdapter.dryRun(
       tx,
       blockContext,
@@ -103,14 +92,14 @@ export class DualModeAdapter implements VMAdapter {
       forceBaseFeeZero
     );
 
-    const [
-      [ethereumJSResult, _ethereumJSTrace],
-      [rethnetResult, rethnetTrace],
-    ] = await Promise.all([ethereumJSResultPromise, rethnetResultPromise]);
+    const [ethereumJSResult, rethnetResult] = await Promise.all([
+      ethereumJSResultPromise,
+      rethnetResultPromise,
+    ]);
 
     try {
       assertEqualRunTxResults(ethereumJSResult, rethnetResult);
-      return [rethnetResult, rethnetTrace];
+      return rethnetResult;
     } catch (e) {
       // if the results didn't match, print the traces
       // console.log("EthereumJS trace");
@@ -222,14 +211,6 @@ export class DualModeAdapter implements VMAdapter {
     await this._rethnetAdapter.restoreContext(stateRoot);
   }
 
-  public async traceTransaction(
-    hash: Buffer,
-    block: Block,
-    config: RpcDebugTracingConfig
-  ): Promise<RpcDebugTraceOutput> {
-    return this._ethereumJSAdapter.traceTransaction(hash, block, config);
-  }
-
   public async setBlockContext(
     block: Block,
     irregularStateOrUndefined: Buffer | undefined
@@ -253,7 +234,7 @@ export class DualModeAdapter implements VMAdapter {
   public async runTxInBlock(
     tx: TypedTransaction,
     block: Block
-  ): Promise<[RunTxResult, Trace]> {
+  ): Promise<RunTxResult> {
     const ethereumJSResultPromise = this._ethereumJSAdapter.runTxInBlock(
       tx,
       block
@@ -261,15 +242,15 @@ export class DualModeAdapter implements VMAdapter {
 
     const rethnetResultPromise = this._rethnetAdapter.runTxInBlock(tx, block);
 
-    const [
-      [ethereumJSResult, ethereumJSTrace],
-      [rethnetResult, _rethnetTrace],
-    ] = await Promise.all([ethereumJSResultPromise, rethnetResultPromise]);
+    const [ethereumJSResult, rethnetResult] = await Promise.all([
+      ethereumJSResultPromise,
+      rethnetResultPromise,
+    ]);
 
     try {
       assertEqualRunTxResults(ethereumJSResult, rethnetResult);
 
-      return [ethereumJSResult, ethereumJSTrace];
+      return ethereumJSResult;
     } catch (e) {
       // if the results didn't match, print the traces
       // console.log("EthereumJS trace");
@@ -528,6 +509,53 @@ export class DualModeAdapter implements VMAdapter {
   public clearLastError() {
     this._ethereumJSVMTracer.clearLastError();
     this._rethnetVMTracer.clearLastError();
+  }
+
+  public selectHardfork(blockNumber: bigint): string {
+    const ethereumJSHardfork =
+      this._ethereumJSAdapter.selectHardfork(blockNumber);
+    const rethnetHardfork = this._rethnetAdapter.selectHardfork(blockNumber);
+
+    if (ethereumJSHardfork !== rethnetHardfork) {
+      throw new Error(
+        `Different hardfork for block ${blockNumber}: ${ethereumJSHardfork} (ethereumjs) !== ${rethnetHardfork} (rethnet)`
+      );
+    }
+
+    return ethereumJSHardfork;
+  }
+
+  public gteHardfork(hardfork: string): boolean {
+    const ethereumJSResult = this._ethereumJSAdapter.gteHardfork(hardfork);
+    const rethnetResult = this._rethnetAdapter.gteHardfork(hardfork);
+
+    if (ethereumJSResult !== rethnetResult) {
+      throw new Error(
+        `Different result for gteHardfork(${hardfork}): ${ethereumJSResult} (ethereumjs) !== ${rethnetResult} (rethnet)`
+      );
+    }
+
+    return ethereumJSResult;
+  }
+
+  public getCommon(): Common {
+    return this._ethereumJSAdapter.getCommon();
+  }
+
+  public setDebugTracer(_debugTracer: VMDebugTracer) {
+    throw new Error("not implemented");
+  }
+
+  public removeDebugTracer() {
+    throw new Error("not implemented");
+  }
+
+  public async accountIsEmpty(_address: Buffer): Promise<boolean> {
+    throw new Error("not implemented");
+  }
+
+  public async isWarmedAddress(_address: Buffer): Promise<boolean> {
+    throw new Error("not implemented");
   }
 }
 

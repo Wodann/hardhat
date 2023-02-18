@@ -63,6 +63,7 @@ import {
 } from "../stack-traces/solidity-errors";
 import { SolidityStackTrace } from "../stack-traces/solidity-stack-trace";
 import { SolidityTracer } from "../stack-traces/solidityTracer";
+import { VMDebugTracer } from "../stack-traces/vm-debug-tracer";
 import { VmTraceDecoder } from "../stack-traces/vm-trace-decoder";
 
 import "./ethereumjs-workarounds";
@@ -249,6 +250,7 @@ export class HardhatNode extends EventEmitter {
 
     const node = new HardhatNode(
       vm,
+      config,
       instanceId,
       blockchain,
       txPool,
@@ -333,6 +335,7 @@ Hardhat Network's forking functionality only works with blocks from at least spu
 
   private constructor(
     private readonly _vm: VMAdapter,
+    private _nodeConfig: NodeConfig,
     private readonly _instanceId: bigint,
     private readonly _blockchain: HardhatBlockchainInterface,
     private readonly _txPool: TxPool,
@@ -1309,9 +1312,96 @@ Hardhat Network's forking functionality only works with blocks from at least spu
         `Unable to find a block containing transaction ${bufferToHex(hash)}`
       );
     }
+    const blockNumber = block.header.number;
 
     return this._runInBlockContext(block.header.number - 1n, async () => {
-      return this._vm.traceTransaction(hash, block, config);
+      let vm = this._vm;
+      if (
+        this._forkBlockNumber !== undefined &&
+        blockNumber <= this._forkBlockNumber
+      ) {
+        assertHardhatInvariant(
+          this._forkNetworkId !== undefined,
+          "this._forkNetworkId should exist if this._forkBlockNumber exists"
+        );
+
+        const common = this._getCommonForTracing(
+          this._forkNetworkId,
+          blockNumber
+        );
+
+        vm = await createVm(common, this._blockchain, this._nodeConfig, (bn) =>
+          selectHardfork(
+            this._forkBlockNumber,
+            common.hardfork(),
+            this._hardforkActivations,
+            bn
+          )
+        );
+      }
+
+      // We don't support tracing transactions before the spuriousDragon fork
+      // to avoid having to distinguish between empty and non-existing accounts.
+      // We *could* do it during the non-forked mode, but for simplicity we just
+      // don't support it at all.
+      const isPreSpuriousDragon = !vm.gteHardfork("spuriousDragon");
+      if (isPreSpuriousDragon) {
+        throw new InvalidInputError(
+          "Tracing is not supported for transactions using hardforks older than Spurious Dragon. "
+        );
+      }
+
+      await vm.startBlock();
+      try {
+        for (const tx of block.transactions) {
+          let txWithCommon: TypedTransaction;
+          const sender = tx.getSenderAddress();
+          if (tx.type === 0) {
+            txWithCommon = new FakeSenderTransaction(sender, tx, {
+              common: vm.getCommon(),
+            });
+          } else if (tx.type === 1) {
+            txWithCommon = new FakeSenderAccessListEIP2930Transaction(
+              sender,
+              tx,
+              {
+                common: vm.getCommon(),
+              }
+            );
+          } else if (tx.type === 2) {
+            txWithCommon = new FakeSenderEIP1559Transaction(
+              sender,
+              { ...tx, gasPrice: undefined },
+              {
+                common: vm.getCommon(),
+              }
+            );
+          } else {
+            throw new InternalError(
+              "Only legacy, EIP2930, and EIP1559 txs are supported"
+            );
+          }
+
+          const txHash = txWithCommon.hash();
+          if (txHash.equals(hash)) {
+            const vmDebugTracer = new VMDebugTracer(vm, config);
+
+            vm.setDebugTracer(vmDebugTracer);
+            const txResult = await vm.runTxInBlock(txWithCommon, block);
+            await vmDebugTracer.addAfterTx(txResult);
+            vm.removeDebugTracer(vmDebugTracer);
+
+            return vmDebugTracer.getDebugTrace();
+          }
+          await vm.runTxInBlock(txWithCommon, block);
+        }
+      } finally {
+        await vm.revertBlock();
+      }
+
+      throw new TransactionExecutionError(
+        `Unable to find a transaction in a block that contains that transaction, this should never happen`
+      );
     });
   }
 
@@ -2236,7 +2326,7 @@ Hardhat Network's forking functionality only works with blocks from at least spu
       // know anything about the txs in the current block
     }
 
-    const [result] = await this._vm.dryRun(tx, blockContext, forceBaseFeeZero);
+    const result = await this._vm.dryRun(tx, blockContext, forceBaseFeeZero);
     return result;
   }
 
@@ -2444,6 +2534,26 @@ Hardhat Network's forking functionality only works with blocks from at least spu
     }
 
     return { maxFeePerGas, maxPriorityFeePerGas };
+  }
+
+  private _getCommonForTracing(networkId: number, blockNumber: bigint): Common {
+    try {
+      const common = Common.custom(
+        {
+          chainId: networkId,
+          networkId,
+        },
+        {
+          hardfork: this._vm.selectHardfork(BigInt(blockNumber)),
+        }
+      );
+
+      return common;
+    } catch {
+      throw new InternalError(
+        `Network id ${networkId} does not correspond to a network that Hardhat can trace`
+      );
+    }
   }
 }
 

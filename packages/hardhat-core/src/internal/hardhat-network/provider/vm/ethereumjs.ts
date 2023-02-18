@@ -13,34 +13,20 @@ import {
 } from "@nomicfoundation/ethereumjs-statemanager";
 import { TypedTransaction } from "@nomicfoundation/ethereumjs-tx";
 import { Account, Address } from "@nomicfoundation/ethereumjs-util";
-import {
-  EEI,
-  RunTxResult as EthereumJSRunTxResult,
-  VM,
-} from "@nomicfoundation/ethereumjs-vm";
+import { EEI, VM } from "@nomicfoundation/ethereumjs-vm";
 import { SuccessReason } from "rethnet-evm";
 import { assertHardhatInvariant } from "../../../core/errors";
-import { RpcDebugTracingConfig } from "../../../core/jsonrpc/types/input/debugTraceTransaction";
-import {
-  InternalError,
-  InvalidInputError,
-  TransactionExecutionError,
-} from "../../../core/providers/errors";
 import { MessageTrace } from "../../stack-traces/message-trace";
 import { VMDebugTracer } from "../../stack-traces/vm-debug-tracer";
 import { VMTracer } from "../../stack-traces/vm-tracer";
 import { ForkStateManager } from "../fork/ForkStateManager";
 import { isForkedNodeConfig, NodeConfig } from "../node-types";
-import { RpcDebugTraceOutput } from "../output";
-import { FakeSenderAccessListEIP2930Transaction } from "../transactions/FakeSenderAccessListEIP2930Transaction";
-import { FakeSenderEIP1559Transaction } from "../transactions/FakeSenderEIP1559Transaction";
-import { FakeSenderTransaction } from "../transactions/FakeSenderTransaction";
 import { HardhatBlockchainInterface } from "../types/HardhatBlockchainInterface";
 import { Bloom } from "../utils/bloom";
 import { makeForkClient } from "../utils/makeForkClient";
 import { makeStateTrie } from "../utils/makeStateTrie";
 import { Exit } from "./exit";
-import { RunTxResult, Trace, VMAdapter } from "./vm-adapter";
+import { RunTxResult, VMAdapter } from "./vm-adapter";
 
 /* eslint-disable @nomiclabs/hardhat-internal-rules/only-hardhat-error */
 
@@ -48,6 +34,7 @@ export class EthereumJSAdapter implements VMAdapter {
   private _blockStartStateRoot: Buffer | undefined;
 
   private _vmTracer: VMTracer;
+  private _vmDebugTracer: VMDebugTracer | undefined;
 
   constructor(
     private readonly _vm: VM,
@@ -138,7 +125,7 @@ export class EthereumJSAdapter implements VMAdapter {
     tx: TypedTransaction,
     blockContext: Block,
     forceBaseFeeZero = false
-  ): Promise<[RunTxResult, Trace]> {
+  ): Promise<RunTxResult> {
     const initialStateRoot = await this.getStateRoot();
 
     let originalCommon: Common | undefined;
@@ -187,24 +174,13 @@ export class EthereumJSAdapter implements VMAdapter {
         }
       );
 
-      const vmDebugTracer = new VMDebugTracer(this._vm);
-      let ethereumJSResult: EthereumJSRunTxResult | undefined;
-      const trace = await vmDebugTracer.trace(
-        async () => {
-          ethereumJSResult = await this._vm.runTx({
-            block: blockContext,
-            tx,
-            skipNonce: true,
-            skipBalance: true,
-            skipBlockGasLimitValidation: true,
-          });
-        },
-        {
-          disableStorage: true,
-          disableMemory: true,
-          disableStack: true,
-        }
-      );
+      const ethereumJSResult = await this._vm.runTx({
+        block: blockContext,
+        tx,
+        skipNonce: true,
+        skipBalance: true,
+        skipBlockGasLimitValidation: true,
+      });
 
       assertHardhatInvariant(
         ethereumJSResult !== undefined,
@@ -221,7 +197,7 @@ export class EthereumJSAdapter implements VMAdapter {
         exit: Exit.fromEthereumJSEvmError(ethereumJSError),
       };
 
-      return [result, trace];
+      return result;
     } finally {
       if (originalCommon !== undefined) {
         (this._vm as any)._common = originalCommon;
@@ -289,85 +265,6 @@ export class EthereumJSAdapter implements VMAdapter {
     );
   }
 
-  public async traceTransaction(
-    hash: Buffer,
-    block: Block,
-    config: RpcDebugTracingConfig
-  ): Promise<RpcDebugTraceOutput> {
-    const blockNumber = block.header.number;
-    let vm = this._vm;
-    if (
-      this._forkBlockNumber !== undefined &&
-      blockNumber <= this._forkBlockNumber
-    ) {
-      assertHardhatInvariant(
-        this._forkNetworkId !== undefined,
-        "this._forkNetworkId should exist if this._forkBlockNumber exists"
-      );
-
-      const common = this._getCommonForTracing(
-        this._forkNetworkId,
-        blockNumber
-      );
-
-      vm = await VM.create({
-        common,
-        activatePrecompiles: true,
-        stateManager: this._vm.stateManager,
-        blockchain: this._vm.blockchain,
-      });
-    }
-
-    // We don't support tracing transactions before the spuriousDragon fork
-    // to avoid having to distinguish between empty and non-existing accounts.
-    // We *could* do it during the non-forked mode, but for simplicity we just
-    // don't support it at all.
-    const isPreSpuriousDragon = !vm._common.gteHardfork("spuriousDragon");
-    if (isPreSpuriousDragon) {
-      throw new InvalidInputError(
-        "Tracing is not supported for transactions using hardforks older than Spurious Dragon. "
-      );
-    }
-
-    for (const tx of block.transactions) {
-      let txWithCommon: TypedTransaction;
-      const sender = tx.getSenderAddress();
-      if (tx.type === 0) {
-        txWithCommon = new FakeSenderTransaction(sender, tx, {
-          common: vm._common,
-        });
-      } else if (tx.type === 1) {
-        txWithCommon = new FakeSenderAccessListEIP2930Transaction(sender, tx, {
-          common: vm._common,
-        });
-      } else if (tx.type === 2) {
-        txWithCommon = new FakeSenderEIP1559Transaction(
-          sender,
-          { ...tx, gasPrice: undefined },
-          {
-            common: vm._common,
-          }
-        );
-      } else {
-        throw new InternalError(
-          "Only legacy, EIP2930, and EIP1559 txs are supported"
-        );
-      }
-
-      const txHash = txWithCommon.hash();
-      if (txHash.equals(hash)) {
-        const vmDebugTracer = new VMDebugTracer(vm);
-        return vmDebugTracer.trace(async () => {
-          await vm.runTx({ tx: txWithCommon, block });
-        }, config);
-      }
-      await vm.runTx({ tx: txWithCommon, block });
-    }
-    throw new TransactionExecutionError(
-      `Unable to find a transaction in a block that contains that transaction, this should never happen`
-    );
-  }
-
   public async startBlock(): Promise<void> {
     if (this._blockStartStateRoot !== undefined) {
       throw new Error("a block is already started");
@@ -379,19 +276,8 @@ export class EthereumJSAdapter implements VMAdapter {
   public async runTxInBlock(
     tx: TypedTransaction,
     block: Block
-  ): Promise<[RunTxResult, Trace]> {
-    const vmTracer = new VMDebugTracer(this._vm);
-    let ethereumJSResult: EthereumJSRunTxResult | undefined;
-    const trace = await vmTracer.trace(
-      async () => {
-        ethereumJSResult = await this._vm.runTx({ tx, block });
-      },
-      {
-        disableStorage: true,
-        disableMemory: true,
-        disableStack: true,
-      }
-    );
+  ): Promise<RunTxResult> {
+    const ethereumJSResult = await this._vm.runTx({ tx, block });
 
     assertHardhatInvariant(
       ethereumJSResult !== undefined,
@@ -408,7 +294,7 @@ export class EthereumJSAdapter implements VMAdapter {
       exit: Exit.fromEthereumJSEvmError(ethereumJSError),
     };
 
-    return [result, trace];
+    return result;
   }
 
   public async addBlockRewards(
@@ -456,24 +342,32 @@ export class EthereumJSAdapter implements VMAdapter {
     this._vmTracer.clearLastError();
   }
 
-  private _getCommonForTracing(networkId: number, blockNumber: bigint): Common {
-    try {
-      const common = Common.custom(
-        {
-          chainId: networkId,
-          networkId,
-        },
-        {
-          hardfork: this._selectHardfork(BigInt(blockNumber)),
-        }
-      );
+  public selectHardfork(blockNumber: bigint): string {
+    return this._selectHardfork(blockNumber);
+  }
 
-      return common;
-    } catch {
-      throw new InternalError(
-        `Network id ${networkId} does not correspond to a network that Hardhat can trace`
-      );
-    }
+  public gteHardfork(hardfork: string): boolean {
+    return this._common.gteHardfork(hardfork);
+  }
+
+  public getCommon(): Common {
+    return this._common;
+  }
+
+  public setDebugTracer(debugTracer: VMDebugTracer) {
+    this._vmDebugTracer = debugTracer;
+  }
+
+  public removeDebugTracer() {
+    this._vmDebugTracer = undefined;
+  }
+
+  public async accountIsEmpty(address: Buffer): Promise<boolean> {
+    return this._stateManager.accountIsEmpty(new Address(address));
+  }
+
+  public async isWarmedAddress(address: Buffer): Promise<boolean> {
+    return this._vm.eei.isWarmedAddress(address);
   }
 
   private _isEip1559Active(blockNumberOrPending?: bigint | "pending"): boolean {
@@ -495,13 +389,18 @@ export class EthereumJSAdapter implements VMAdapter {
         message.to !== undefined
           ? await this.getContractCode(message.codeAddress)
           : undefined;
-      await this._vmTracer.addBeforeMessage({
+      const beforeMessage = {
         ...message,
         to: message.to?.toBuffer(),
         codeAddress:
           message.to !== undefined ? message.codeAddress.toBuffer() : undefined,
         code,
-      });
+      };
+
+      await this._vmTracer.addBeforeMessage(beforeMessage);
+      if (this._vmDebugTracer !== undefined) {
+        await this._vmDebugTracer.addBeforeMessage(beforeMessage);
+      }
 
       return next();
     } catch (e) {
@@ -511,7 +410,7 @@ export class EthereumJSAdapter implements VMAdapter {
 
   private _stepHandler = async (step: InterpreterStep, next: any) => {
     try {
-      await this._vmTracer.addStep({
+      const tracingStep = {
         depth: step.depth,
         pc: BigInt(step.pc),
         opcode: step.opcode.name,
@@ -530,7 +429,12 @@ export class EthereumJSAdapter implements VMAdapter {
           },
         },
         contractAddress: step.address.buf,
-      });
+      };
+
+      await this._vmTracer.addStep(tracingStep);
+      if (this._vmDebugTracer !== undefined) {
+        await this._vmDebugTracer.addStep(tracingStep);
+      }
 
       return next();
     } catch (e) {
@@ -592,7 +496,7 @@ export class EthereumJSAdapter implements VMAdapter {
         };
       }
 
-      await this._vmTracer.addAfterMessage({
+      const afterMessage = {
         executionResult: {
           result: executionResult,
           trace: {
@@ -600,7 +504,12 @@ export class EthereumJSAdapter implements VMAdapter {
             returnValue: result.execResult.returnValue,
           },
         },
-      });
+      };
+
+      await this._vmTracer.addAfterMessage(afterMessage);
+      if (this._vmDebugTracer !== undefined) {
+        await this._vmDebugTracer.addAfterMessage(afterMessage);
+      }
 
       return next();
     } catch (e) {

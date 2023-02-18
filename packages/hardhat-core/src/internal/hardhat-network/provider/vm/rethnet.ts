@@ -27,28 +27,28 @@ import {
 } from "../utils/convertToRethnet";
 import { hardforkGte, HardforkName } from "../../../util/hardforks";
 import { keccak256 } from "../../../util/keccak";
-import { RpcDebugTraceOutput } from "../output";
 import { RethnetStateManager } from "../RethnetState";
-import { RpcDebugTracingConfig } from "../../../core/jsonrpc/types/input/debugTraceTransaction";
 import { MessageTrace } from "../../stack-traces/message-trace";
+import { VMDebugTracer } from "../../stack-traces/vm-debug-tracer";
 import { VMTracer } from "../../stack-traces/vm-tracer";
 
-import { RunTxResult, Trace, VMAdapter } from "./vm-adapter";
+import { RunTxResult, VMAdapter } from "./vm-adapter";
 
 /* eslint-disable @nomiclabs/hardhat-internal-rules/only-hardhat-error */
 /* eslint-disable @typescript-eslint/no-unused-vars */
 
 export class RethnetAdapter implements VMAdapter {
   private _vmTracer: VMTracer;
+  private _vmDebugTracer: VMDebugTracer | undefined;
 
   constructor(
     private _blockchain: Blockchain,
     private _state: RethnetStateManager,
     private _rethnet: Rethnet,
     private readonly _selectHardfork: (blockNumber: bigint) => string,
-    common: Common
+    private _common: Common
   ) {
-    this._vmTracer = new VMTracer(common, false);
+    this._vmTracer = new VMTracer(_common, false);
   }
 
   public static async create(
@@ -95,7 +95,7 @@ export class RethnetAdapter implements VMAdapter {
     tx: TypedTransaction,
     blockContext: Block,
     forceBaseFeeZero?: boolean
-  ): Promise<[RunTxResult, Trace]> {
+  ): Promise<RunTxResult> {
     const rethnetTx = ethereumjsTransactionToRethnet(tx);
 
     const difficulty = this._getBlockEnvDifficulty(
@@ -133,7 +133,7 @@ export class RethnetAdapter implements VMAdapter {
         rethnetResult.execResult,
         blockContext.header.gasUsed
       );
-      return [result, rethnetResult.execResult.trace];
+      return result;
     } catch (e) {
       // console.log("Rethnet trace");
       // console.log(rethnetResult.execResult.trace);
@@ -291,7 +291,7 @@ export class RethnetAdapter implements VMAdapter {
   public async runTxInBlock(
     tx: TypedTransaction,
     block: Block
-  ): Promise<[RunTxResult, Trace]> {
+  ): Promise<RunTxResult> {
     const rethnetTx = ethereumjsTransactionToRethnet(tx);
 
     const difficulty = this._getBlockEnvDifficulty(block.header.difficulty);
@@ -318,7 +318,7 @@ export class RethnetAdapter implements VMAdapter {
         rethnetResult,
         block.header.gasUsed
       );
-      return [result, rethnetResult.trace];
+      return result;
     } catch (e) {
       // console.log("Rethnet trace");
       // console.log(rethnetResult.trace);
@@ -377,18 +377,6 @@ export class RethnetAdapter implements VMAdapter {
     await this._state.revert();
   }
 
-  /**
-   * Re-execute the transactions in the block up until the transaction with the
-   * given hash, and trace the execution of that transaction.
-   */
-  public async traceTransaction(
-    hash: Buffer,
-    block: Block,
-    config: RpcDebugTracingConfig
-  ): Promise<RpcDebugTraceOutput> {
-    throw new Error("traceTransaction not implemented for Rethnet");
-  }
-
   public async makeSnapshot(): Promise<Buffer> {
     return this._state.makeSnapshot();
   }
@@ -405,6 +393,35 @@ export class RethnetAdapter implements VMAdapter {
 
   public clearLastError() {
     this._vmTracer.clearLastError();
+  }
+
+  public selectHardfork(blockNumber: bigint): string {
+    return this._selectHardfork(blockNumber);
+  }
+
+  public gteHardfork(hardfork: string): boolean {
+    return this._common.gteHardfork(hardfork);
+  }
+
+  public getCommon(): Common {
+    return this._common;
+  }
+
+  public setDebugTracer(debugTracer: VMDebugTracer) {
+    this._vmDebugTracer = debugTracer;
+  }
+
+  public removeDebugTracer() {
+    this._vmDebugTracer = undefined;
+  }
+
+  public async accountIsEmpty(address: Buffer): Promise<boolean> {
+    return this._state.accountIsEmpty(new Address(address));
+  }
+
+  public async isWarmedAddress(_address: Buffer): Promise<boolean> {
+    // TODO
+    return true;
   }
 
   private _getBlockEnvDifficulty(
@@ -443,21 +460,24 @@ export class RethnetAdapter implements VMAdapter {
     return undefined;
   }
 
-  private _beforeMessageHandler = async (
-    message: TracingMessage,
-    next: any
-  ) => {
+  private _beforeMessageHandler = async (message: TracingMessage) => {
     await this._vmTracer.addBeforeMessage(message);
+    if (this._vmDebugTracer !== undefined) {
+      await this._vmDebugTracer.addBeforeMessage(message);
+    }
   };
 
-  private _stepHandler = async (step: TracingStep, _next: any) => {
+  private _stepHandler = async (step: TracingStep) => {
     await this._vmTracer.addStep(step);
+    if (this._vmDebugTracer !== undefined) {
+      await this._vmDebugTracer.addStep(step);
+    }
   };
 
-  private _afterMessageHandler = async (
-    result: TracingMessageResult,
-    _next: any
-  ) => {
+  private _afterMessageHandler = async (result: TracingMessageResult) => {
     await this._vmTracer.addAfterMessage(result);
+    if (this._vmDebugTracer !== undefined) {
+      await this._vmDebugTracer.addAfterMessage(result);
+    }
   };
 }
