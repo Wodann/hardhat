@@ -12,10 +12,6 @@ import {
   Blockchain,
   Bytecode,
   Rethnet,
-  Tracer,
-  TracingMessage,
-  TracingMessageResult,
-  TracingStep,
 } from "rethnet-evm";
 
 import { isForkedNodeConfig, NodeConfig } from "../node-types";
@@ -107,26 +103,29 @@ export class RethnetAdapter implements VMAdapter {
       blockContext.header.mixHash
     );
 
-    const tracer = new Tracer({
-      beforeMessage: this._beforeMessageHandler,
-      step: this._stepHandler,
-      afterMessage: this._afterMessageHandler,
+    const rethnetResult = await this._rethnet.guaranteedDryRun(rethnetTx, {
+      number: blockContext.header.number,
+      coinbase: blockContext.header.coinbase.buf,
+      timestamp: blockContext.header.timestamp,
+      basefee:
+        forceBaseFeeZero === true ? 0n : blockContext.header.baseFeePerGas,
+      gasLimit: blockContext.header.gasLimit,
+      difficulty,
+      prevrandao: prevRandao,
     });
 
-    const rethnetResult = await this._rethnet.guaranteedDryRun(
-      rethnetTx,
-      {
-        number: blockContext.header.number,
-        coinbase: blockContext.header.coinbase.buf,
-        timestamp: blockContext.header.timestamp,
-        basefee:
-          forceBaseFeeZero === true ? 0n : blockContext.header.baseFeePerGas,
-        gasLimit: blockContext.header.gasLimit,
-        difficulty,
-        prevrandao: prevRandao,
-      },
-      tracer
-    );
+    for (const traceItem of rethnetResult.execResult.trace) {
+      if ("pc" in traceItem) {
+        // step
+        await this._vmTracer.addStep(traceItem);
+      } else if ("executionResult" in traceItem) {
+        // after message
+        await this._vmTracer.addAfterMessage(traceItem);
+      } else {
+        // before message
+        await this._vmTracer.addBeforeMessage(traceItem);
+      }
+    }
 
     try {
       const result = rethnetResultToRunTxResult(
@@ -301,17 +300,23 @@ export class RethnetAdapter implements VMAdapter {
       block.header.mixHash
     );
 
-    const tracer = new Tracer({
-      beforeMessage: this._beforeMessageHandler,
-      step: this._stepHandler,
-      afterMessage: this._afterMessageHandler,
-    });
-
     const rethnetResult = await this._rethnet.run(
       rethnetTx,
-      ethereumjsHeaderDataToRethnet(block.header, difficulty, prevRandao),
-      tracer
+      ethereumjsHeaderDataToRethnet(block.header, difficulty, prevRandao)
     );
+
+    for (const traceItem of rethnetResult.trace) {
+      if ("pc" in traceItem) {
+        // step
+        await this._vmTracer.addStep(traceItem);
+      } else if ("executionResult" in traceItem) {
+        // after message
+        await this._vmTracer.addAfterMessage(traceItem);
+      } else {
+        // before message
+        await this._vmTracer.addBeforeMessage(traceItem);
+      }
+    }
 
     try {
       const result = rethnetResultToRunTxResult(
@@ -446,22 +451,4 @@ export class RethnetAdapter implements VMAdapter {
 
     return undefined;
   }
-
-  private _beforeMessageHandler = async (
-    message: TracingMessage,
-    next: any
-  ) => {
-    await this._vmTracer.addBeforeMessage(message);
-  };
-
-  private _stepHandler = async (step: TracingStep, _next: any) => {
-    await this._vmTracer.addStep(step);
-  };
-
-  private _afterMessageHandler = async (
-    result: TracingMessageResult,
-    _next: any
-  ) => {
-    await this._vmTracer.addAfterMessage(result);
-  };
 }

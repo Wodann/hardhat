@@ -24,6 +24,9 @@
 /types
 /utils
 
+# temporary, please remove
+!index.d.ts
+
 test/internal/hardhat-network/provider/.hardhat_node_test_cache/
 !.eslintrc.js
 

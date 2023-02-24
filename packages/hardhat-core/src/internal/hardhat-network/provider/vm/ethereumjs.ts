@@ -600,10 +600,7 @@ export class EthereumJSAdapter implements VMAdapter {
       await this._vmTracer.addAfterMessage({
         executionResult: {
           result: executionResult,
-          trace: {
-            steps: [],
-            returnValue: result.execResult.returnValue,
-          },
+          trace: [],
         },
       });
 
