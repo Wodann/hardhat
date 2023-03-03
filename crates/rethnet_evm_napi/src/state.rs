@@ -62,13 +62,16 @@ pub struct StateManager {
 impl StateManager {
     /// Constructs a [`StateManager`] with an empty state.
     #[napi(constructor)]
-    pub fn new() -> napi::Result<Self> {
-        Self::with_accounts(HashMap::default())
+    pub fn new(mut env: Env) -> napi::Result<Self> {
+        Self::with_accounts(&mut env, HashMap::default())
     }
 
     /// Constructs a [`StateManager`] with the provided accounts present in the genesis state.
     #[napi(factory)]
-    pub fn with_genesis_accounts(accounts: Vec<GenesisAccount>) -> napi::Result<Self> {
+    pub fn with_genesis_accounts(
+        mut env: Env,
+        accounts: Vec<GenesisAccount>,
+    ) -> napi::Result<Self> {
         let context = Secp256k1::signing_only();
         let genesis_accounts = accounts
             .into_iter()
@@ -86,10 +89,13 @@ impl StateManager {
             })
             .collect::<napi::Result<HashMap<Address, AccountInfo>>>()?;
 
-        Self::with_accounts(genesis_accounts)
+        Self::with_accounts(&mut env, genesis_accounts)
     }
 
-    fn with_accounts(mut accounts: HashMap<Address, AccountInfo>) -> napi::Result<Self> {
+    fn with_accounts(
+        env: &mut Env,
+        mut accounts: HashMap<Address, AccountInfo>,
+    ) -> napi::Result<Self> {
         // Mimic precompiles activation
         for idx in 1..=8 {
             let mut address = Address::zero();
@@ -101,16 +107,18 @@ impl StateManager {
 
         state.checkpoint().unwrap();
 
-        Self::with_state(state)
+        Self::with_state(env, state)
     }
 
-    fn with_state<S>(state: S) -> napi::Result<Self>
+    fn with_state<S>(env: &mut Env, state: S) -> napi::Result<Self>
     where
         S: SyncState<StateError>,
     {
         let state: Box<dyn SyncState<StateError>> = Box::new(state);
         let state = AsyncState::new(state)
             .map_err(|e| napi::Error::new(Status::GenericFailure, e.to_string()))?;
+
+        env.adjust_external_memory(mem::size_of_val(&state) as i64);
 
         Ok(Self {
             state: Arc::new(state),
@@ -246,7 +254,7 @@ impl StateManager {
             env.raw(),
             unsafe { modify_account_fn.raw() },
             0,
-            |ctx: ThreadSafeCallContext<ModifyAccountCall>| {
+            |mut ctx: ThreadSafeCallContext<ModifyAccountCall>| {
                 let sender = ctx.value.sender.clone();
 
                 let balance = ctx
@@ -268,12 +276,15 @@ impl StateManager {
 
                     let code = code.original_bytes();
 
+                    ctx.env.adjust_external_memory(code.len() as i64);
+
                     unsafe {
                         ctx.env.create_buffer_with_borrowed_data(
                             code.as_ptr(),
                             code.len(),
                             code,
-                            |code: rethnet_eth::Bytes, _env| {
+                            |code: rethnet_eth::Bytes, mut env| {
+                                env.adjust_external_memory(-(code.len() as i64));
                                 mem::drop(code);
                             },
                         )

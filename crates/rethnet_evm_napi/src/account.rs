@@ -71,16 +71,19 @@ impl Account {
     }
 
     #[napi(getter)]
-    pub fn code(&self, env: Env) -> napi::Result<Option<JsBuffer>> {
+    pub fn code(&self, mut env: Env) -> napi::Result<Option<JsBuffer>> {
         self.inner.code.as_ref().map_or(Ok(None), |code| {
             let code = code.original_bytes();
+
+            env.adjust_external_memory(code.len() as i64);
 
             unsafe {
                 env.create_buffer_with_borrowed_data(
                     code.as_ptr(),
                     code.len(),
                     code,
-                    |code: Bytes, _env| {
+                    |code: Bytes, mut env| {
+                        env.adjust_external_memory(-(code.len() as i64));
                         mem::drop(code);
                     },
                 )

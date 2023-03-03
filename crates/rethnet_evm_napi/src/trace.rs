@@ -101,14 +101,18 @@ pub struct TracingMessage {
 }
 
 impl TracingMessage {
-    pub fn new(env: &Env, message: &BeforeMessage) -> napi::Result<Self> {
+    pub fn new(env: &mut Env, message: &BeforeMessage) -> napi::Result<Self> {
         let data = message.data.clone();
+
+        env.adjust_external_memory(data.len() as i64);
+
         let data = unsafe {
             env.create_buffer_with_borrowed_data(
                 data.as_ptr(),
                 data.len(),
                 data,
-                |data: rethnet_eth::Bytes, _env| {
+                |data: rethnet_eth::Bytes, mut env| {
+                    env.adjust_external_memory(-(data.len() as i64));
                     mem::drop(data);
                 },
             )
@@ -118,12 +122,15 @@ impl TracingMessage {
         let code = message.code.as_ref().map_or(Ok(None), |code| {
             let code = code.original_bytes();
 
+            env.adjust_external_memory(code.len() as i64);
+
             unsafe {
                 env.create_buffer_with_borrowed_data(
                     code.as_ptr(),
                     code.len(),
                     code,
-                    |code: rethnet_eth::Bytes, _env| {
+                    |code: rethnet_eth::Bytes, mut env| {
+                        env.adjust_external_memory(-(code.len() as i64));
                         mem::drop(code);
                     },
                 )

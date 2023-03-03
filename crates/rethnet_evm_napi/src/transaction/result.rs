@@ -131,7 +131,7 @@ pub struct ExecutionResult {
 }
 
 impl ExecutionResult {
-    pub fn new(env: &Env, result: &rethnet_evm::ExecutionResult) -> napi::Result<Self> {
+    pub fn new(env: &mut Env, result: &rethnet_evm::ExecutionResult) -> napi::Result<Self> {
         let result = match result {
             rethnet_evm::ExecutionResult::Success {
                 reason,
@@ -153,13 +153,18 @@ impl ExecutionResult {
                     output: match output {
                         rethnet_evm::Output::Call(return_value) => {
                             let return_value = return_value.clone();
+                            env.adjust_external_memory(return_value.len() as i64);
+
                             Either::A(CallOutput {
                                 return_value: unsafe {
                                     env.create_buffer_with_borrowed_data(
                                         return_value.as_ptr(),
                                         return_value.len(),
                                         return_value,
-                                        |return_value: rethnet_eth::Bytes, _env| {
+                                        |return_value: rethnet_eth::Bytes, mut env| {
+                                            env.adjust_external_memory(
+                                                -(return_value.len() as i64),
+                                            );
                                             mem::drop(return_value);
                                         },
                                     )
@@ -169,6 +174,7 @@ impl ExecutionResult {
                         }
                         rethnet_evm::Output::Create(return_value, address) => {
                             let return_value = return_value.clone();
+                            env.adjust_external_memory(return_value.len() as i64);
 
                             Either::B(CreateOutput {
                                 return_value: unsafe {
@@ -176,7 +182,10 @@ impl ExecutionResult {
                                         return_value.as_ptr(),
                                         return_value.len(),
                                         return_value,
-                                        |return_value: rethnet_eth::Bytes, _env| {
+                                        |return_value: rethnet_eth::Bytes, mut env| {
+                                            env.adjust_external_memory(
+                                                -(return_value.len() as i64),
+                                            );
                                             mem::drop(return_value);
                                         },
                                     )
@@ -190,6 +199,8 @@ impl ExecutionResult {
             }
             rethnet_evm::ExecutionResult::Revert { gas_used, output } => {
                 let output = output.clone();
+                env.adjust_external_memory(output.len() as i64);
+
                 Either3::B(RevertResult {
                     gas_used: BigInt::from(*gas_used),
                     output: unsafe {
@@ -197,7 +208,8 @@ impl ExecutionResult {
                             output.as_ptr(),
                             output.len(),
                             output,
-                            |output: rethnet_eth::Bytes, _env| {
+                            |output: rethnet_eth::Bytes, mut env| {
+                                env.adjust_external_memory(-(output.len() as i64));
                                 mem::drop(output);
                             },
                         )
@@ -239,8 +251,8 @@ impl TransactionResult {
 #[napi]
 impl TransactionResult {
     #[napi(getter)]
-    pub fn result(&self, env: Env) -> napi::Result<ExecutionResult> {
-        ExecutionResult::new(&env, &self.inner)
+    pub fn result(&self, mut env: Env) -> napi::Result<ExecutionResult> {
+        ExecutionResult::new(&mut env, &self.inner)
     }
 
     #[napi(getter)]
@@ -253,7 +265,7 @@ impl TransactionResult {
     #[napi(getter)]
     pub fn trace(
         &self,
-        env: Env,
+        mut env: Env,
     ) -> napi::Result<Option<Vec<Either3<TracingMessage, TracingStep, TracingMessageResult>>>> {
         self.trace.as_ref().map_or(Ok(None), |trace| {
             trace
@@ -261,13 +273,13 @@ impl TransactionResult {
                 .iter()
                 .map(|message| match message {
                     rethnet_evm::trace::TraceMessage::Before(message) => {
-                        TracingMessage::new(&env, message).map(Either3::A)
+                        TracingMessage::new(&mut env, message).map(Either3::A)
                     }
                     rethnet_evm::trace::TraceMessage::Step(step) => {
                         Ok(Either3::B(TracingStep::new(step)))
                     }
                     rethnet_evm::trace::TraceMessage::After(result) => {
-                        ExecutionResult::new(&env, result).map(|execution_result| {
+                        ExecutionResult::new(&mut env, result).map(|execution_result| {
                             Either3::C(TracingMessageResult { execution_result })
                         })
                     }

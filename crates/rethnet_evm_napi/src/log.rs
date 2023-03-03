@@ -12,7 +12,7 @@ pub struct Log {
 }
 
 impl Log {
-    pub fn new(env: &Env, log: &rethnet_evm::Log) -> napi::Result<Self> {
+    pub fn new(env: &mut Env, log: &rethnet_evm::Log) -> napi::Result<Self> {
         let topics = log
             .topics
             .iter()
@@ -20,12 +20,16 @@ impl Log {
             .collect();
 
         let data = log.data.clone();
+
+        env.adjust_external_memory(data.len() as i64);
+
         let data = unsafe {
             env.create_buffer_with_borrowed_data(
                 data.as_ptr(),
                 data.len(),
                 data,
-                |data: rethnet_eth::Bytes, _env| {
+                |data: rethnet_eth::Bytes, mut env| {
+                    env.adjust_external_memory(-(data.len() as i64));
                     mem::drop(data);
                 },
             )
