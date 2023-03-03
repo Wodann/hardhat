@@ -370,8 +370,9 @@ impl StateDebug for LayeredState<RethnetLayer> {
     }
 
     fn set_state_root(&mut self, state_root: &B256) -> Result<(), Self::Error> {
-        if let Some(snapshot) = self.snapshots.get(state_root) {
-            self.stack = snapshot.clone();
+        // A snapshot can only be used once
+        if let Some(snapshot) = self.snapshots.remove(state_root) {
+            self.stack = snapshot;
 
             Ok(())
         } else if let Some(layer_id) =
