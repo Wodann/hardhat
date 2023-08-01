@@ -1,10 +1,11 @@
-import { Block } from "@nomicfoundation/ethereumjs-block";
 import { BlockchainInterface } from "@nomicfoundation/ethereumjs-blockchain";
 
-import { FilterParams } from "../node-types";
-import { RpcLogOutput, RpcReceiptOutput } from "../output";
+import { RpcReceiptOutput } from "../output";
+import { BlockchainAdapter } from "../blockchain";
 
-export interface HardhatBlockchainInterface extends BlockchainInterface {
+export interface HardhatBlockchainInterface
+  extends BlockchainInterface,
+    BlockchainAdapter {
   addTransactionReceipts(receipts: RpcReceiptOutput[]): void;
   reserveBlocks(
     count: bigint,
@@ -13,13 +14,4 @@ export interface HardhatBlockchainInterface extends BlockchainInterface {
     previousBlockTotalDifficulty: bigint,
     previousBlockBaseFeePerGas: bigint | undefined
   ): void;
-  deleteLaterBlocks(block: Block): void;
-  getBlockByTransactionHash(transactionHash: Buffer): Promise<Block | null>;
-  getLatestBlock(): Promise<Block>;
-  getLatestBlockNumber(): bigint;
-  getLogs(filterParams: FilterParams): Promise<RpcLogOutput[]>;
-  getTotalDifficulty(blockHash: Buffer): Promise<bigint>;
-  getTransactionReceipt(
-    transactionHash: Buffer
-  ): Promise<RpcReceiptOutput | null>;
 }

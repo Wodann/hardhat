@@ -6,8 +6,8 @@ import {
   assertEqualBlocks,
   assertEqualRunTxResults,
 } from "../../utils/assertions";
-import { globalRethnetContext } from "../rethnet";
 import { randomHashSeed } from "../../fork/ForkStateManager";
+import { globalRethnetContext } from "../../context/rethnet";
 
 export class DualModeBlockBuilder implements BlockBuilderAdapter {
   constructor(
@@ -20,7 +20,7 @@ export class DualModeBlockBuilder implements BlockBuilderAdapter {
     const rethnetResult = await this._rethnetBuilder.addTransaction(tx);
 
     // Matches EthereumJS' runCall checkpoint call
-    globalRethnetContext.setHashGeneratorSeed(randomHashSeed());
+    globalRethnetContext.setStateRootGeneratorSeed(randomHashSeed());
 
     assertEqualRunTxResults(ethereumJSResult, rethnetResult);
 
