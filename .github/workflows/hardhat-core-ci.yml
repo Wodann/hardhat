@@ -102,6 +102,8 @@ jobs:
 
       - name: Run tests
         env:
+          INFURA_URL: ${{ secrets.INFURA_URL }}
+          ALCHEMY_URL: ${{ secrets.ALCHEMY_URL }}
           HARDHAT_EXPERIMENTAL_VM_MODE: ${{ matrix.vm }}
           DO_NOT_SET_THIS_ENV_VAR____IS_HARDHAT_CI: true
           FORCE_COLOR: 3
@@ -156,7 +158,7 @@ jobs:
           HARDHAT_EXPERIMENTAL_VM_MODE: ${{ matrix.vm }}
           DO_NOT_SET_THIS_ENV_VAR____IS_HARDHAT_CI: true
           FORCE_COLOR: 3
-        run: yarn test:except-tracing
+        run: yarn test:forking
 
   test-tracing:
     name: Test stack tracing (${{ matrix.os }}, Node ${{ matrix.node }}, ${{ matrix.vm }})
@@ -202,6 +204,8 @@ jobs:
 
       - name: Run tests
         env:
+          INFURA_URL: ${{ secrets.INFURA_URL }}
+          ALCHEMY_URL: ${{ secrets.ALCHEMY_URL }}
           HARDHAT_EXPERIMENTAL_VM_MODE: ${{ matrix.vm }}
           NODE_OPTIONS: "--max-old-space-size=4096"
           DO_NOT_SET_THIS_ENV_VAR____IS_HARDHAT_CI: true
