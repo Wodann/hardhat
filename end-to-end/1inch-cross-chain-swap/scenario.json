@@ -8,10 +8,20 @@
   "submodules": true,
   "defaultCommand": "FOUNDRY_PROFILE=default npx hardhat test solidity",
   "benchmark": {
-    "runs": {
-      "coldCompile": 3,
-      "warmCompile": 97,
-      "defaultCommand": 9
+    "commands": {
+      "cold compile": {
+        "runs": 3,
+        "prepare": "npx hardhat clean",
+        "command": "npx hardhat compile"
+      },
+      "warm compile": {
+        "runs": 97,
+        "command": "npx hardhat compile"
+      },
+      "default command": {
+        "runs": 9,
+        "command": "FOUNDRY_PROFILE=default npx hardhat test solidity"
+      }
     }
   }
 }

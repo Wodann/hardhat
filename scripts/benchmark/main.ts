@@ -78,8 +78,7 @@ export async function runBenchmark(benchArgs: BenchArgs): Promise<void> {
   }
 
   const benchCommand = command ?? scenario.definition.defaultCommand;
-  const runs =
-    benchArgs.runs ?? scenario.definition.benchmark?.runs?.defaultCommand ?? 10;
+  const runs = benchArgs.runs ?? 10;
 
   if (init) {
     logStep("Initializing scenario");
