@@ -68,11 +68,9 @@ function isCommandsMap(value: unknown): value is Record<string, CommandConfig> {
     return false;
   }
 
-  return keys.every(isCommandName) && Object.values(obj).every(isCommandConfig);
-}
-
-function isCommandName(name: string): boolean {
-  return name.length > 0 && !name.includes("/");
+  return (
+    keys.every((k) => k.length > 0) && Object.values(obj).every(isCommandConfig)
+  );
 }
 
 export function isCommandConfig(value: unknown): value is CommandConfig {

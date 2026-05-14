@@ -78,8 +78,7 @@
           "minProperties": 1,
           "propertyNames": {
             "type": "string",
-            "minLength": 1,
-            "pattern": "^[^/]+$"
+            "minLength": 1
           },
           "additionalProperties": {
             "type": "object",
@@ -103,7 +102,7 @@
               }
             }
           },
-          "description": "Named commands to benchmark. Iterated in definition order; the key becomes the benchmark name on disk. Keys must be non-empty and may not contain '/' (the separator used in the persisted <scenario> / <name> entry)."
+          "description": "Named commands to benchmark. Iterated in definition order; the key becomes the benchmark name on disk."
         }
       },
       "description": "Benchmark configuration for pnpm bench and pnpm bench:regression"

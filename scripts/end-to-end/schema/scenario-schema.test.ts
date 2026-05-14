@@ -404,17 +404,6 @@ describe("isBenchmarkConfig", () => {
     );
   });
 
-  it("rejects a command-map key containing '/'", () => {
-    assert.equal(
-      isBenchmarkConfig({
-        commands: {
-          "warm/compile": { runs: 1, command: "npx hardhat compile" },
-        },
-      }),
-      false,
-    );
-  });
-
   it("rejects commands containing an invalid entry", () => {
     assert.equal(
       isBenchmarkConfig({
