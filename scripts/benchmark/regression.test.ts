@@ -33,23 +33,7 @@ describe("findMissingCommands", () => {
     assert.deepEqual(result, []);
   });
 
-  it("flags scenarios with no benchmark field", () => {
-    const result = findMissingCommands([
-      { id: "no-bench", definition: definition() },
-    ]);
-
-    assert.deepEqual(result, [{ id: "no-bench", reason: "missing" }]);
-  });
-
-  it("flags scenarios with benchmark but no commands", () => {
-    const result = findMissingCommands([
-      { id: "no-cmds", definition: definition({ benchmark: {} }) },
-    ]);
-
-    assert.deepEqual(result, [{ id: "no-cmds", reason: "missing" }]);
-  });
-
-  it("flags scenarios with empty commands map", () => {
+  it("flags scenarios with an empty commands map", () => {
     const result = findMissingCommands([
       {
         id: "empty",
@@ -57,10 +41,18 @@ describe("findMissingCommands", () => {
       },
     ]);
 
-    assert.deepEqual(result, [{ id: "empty", reason: "empty" }]);
+    assert.deepEqual(result, ["empty"]);
   });
 
-  it("returns one entry per offending scenario in input order", () => {
+  it("ignores scenarios without a benchmark field (caught upstream by the schema)", () => {
+    const result = findMissingCommands([
+      { id: "no-bench", definition: definition() },
+    ]);
+
+    assert.deepEqual(result, []);
+  });
+
+  it("returns ids in input order", () => {
     const result = findMissingCommands([
       {
         id: "ok",
@@ -68,16 +60,16 @@ describe("findMissingCommands", () => {
           benchmark: { commands: { x: { runs: 1, command: "x" } } },
         }),
       },
-      { id: "no-bench", definition: definition() },
       {
-        id: "empty",
+        id: "empty-1",
+        definition: definition({ benchmark: { commands: {} } }),
+      },
+      {
+        id: "empty-2",
         definition: definition({ benchmark: { commands: {} } }),
       },
     ]);
 
-    assert.deepEqual(result, [
-      { id: "no-bench", reason: "missing" },
-      { id: "empty", reason: "empty" },
-    ]);
+    assert.deepEqual(result, ["empty-1", "empty-2"]);
   });
 });

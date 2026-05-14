@@ -347,40 +347,25 @@ function collectScenarios(args: RegressionArgs): ScenarioEntry[] {
   return entries;
 }
 
-export type MissingCommandsReason = "missing" | "empty";
-
 export function findMissingCommands(
   scenarios: Array<{ id: string; definition: ScenarioDefinition }>,
-): Array<{ id: string; reason: MissingCommandsReason }> {
-  const missing: Array<{ id: string; reason: MissingCommandsReason }> = [];
-
-  for (const scenario of scenarios) {
-    const commands = scenario.definition.benchmark?.commands;
-
-    if (commands === undefined) {
-      missing.push({ id: scenario.id, reason: "missing" });
-    } else if (Object.keys(commands).length === 0) {
-      missing.push({ id: scenario.id, reason: "empty" });
-    }
-  }
-
-  return missing;
+): string[] {
+  return scenarios
+    .filter((s) => {
+      const commands = s.definition.benchmark?.commands;
+      return commands !== undefined && Object.keys(commands).length === 0;
+    })
+    .map((s) => s.id);
 }
 
-function printMissingCommandsError(
-  missing: Array<{ id: string; reason: MissingCommandsReason }>,
-): void {
+function printMissingCommandsError(missing: string[]): void {
   logError(
     "Regression benchmark requires a non-empty benchmark.commands map in every scenario.json.",
   );
-  console.error("Offending scenarios:");
+  console.error("Scenarios with an empty commands map:");
 
-  for (const { id, reason } of missing) {
-    const detail =
-      reason === "missing"
-        ? "benchmark.commands is not set"
-        : "benchmark.commands is empty";
-    console.error(`  - end-to-end/${id}/scenario.json: ${detail}`);
+  for (const id of missing) {
+    console.error(`  - end-to-end/${id}/scenario.json`);
   }
 
   console.error(

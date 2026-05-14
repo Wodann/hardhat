@@ -341,8 +341,19 @@ describe("isCommandConfig", () => {
 });
 
 describe("isBenchmarkConfig", () => {
-  it("accepts an empty object", () => {
-    assert.equal(isBenchmarkConfig({}), true);
+  it("rejects an empty object (must declare skip or commands)", () => {
+    assert.equal(isBenchmarkConfig({}), false);
+  });
+
+  it("accepts skip on its own", () => {
+    assert.equal(isBenchmarkConfig({ skip: true }), true);
+  });
+
+  it("accepts commands on its own", () => {
+    assert.equal(
+      isBenchmarkConfig({ commands: { x: { runs: 1, command: "x" } } }),
+      true,
+    );
   });
 
   it("accepts skip with commands together", () => {

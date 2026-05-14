@@ -39,6 +39,10 @@ export function isBenchmarkConfig(value: unknown): value is {
 
   const obj = value as Record<string, unknown>;
 
+  if (obj.skip === undefined && obj.commands === undefined) {
+    return false;
+  }
+
   return (
     (obj.skip === undefined || obj.skip === true) &&
     (obj.commands === undefined || isCommandsMap(obj.commands))

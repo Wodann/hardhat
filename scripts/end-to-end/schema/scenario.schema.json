@@ -66,6 +66,7 @@
     "benchmark": {
       "type": "object",
       "additionalProperties": false,
+      "anyOf": [{ "required": ["skip"] }, { "required": ["commands"] }],
       "properties": {
         "skip": {
           "type": "boolean",
