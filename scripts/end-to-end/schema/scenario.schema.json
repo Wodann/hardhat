@@ -76,6 +76,11 @@
         "commands": {
           "type": "object",
           "minProperties": 1,
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^/]+$"
+          },
           "additionalProperties": {
             "type": "object",
             "additionalProperties": false,
@@ -88,15 +93,17 @@
               },
               "prepare": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Optional shell snippet to run before each timed run (passed to hyperfine --prepare)"
               },
               "command": {
                 "type": "string",
+                "minLength": 1,
                 "description": "Shell command to benchmark"
               }
             }
           },
-          "description": "Named commands to benchmark. Iterated in definition order; the key becomes the benchmark name on disk."
+          "description": "Named commands to benchmark. Iterated in definition order; the key becomes the benchmark name on disk. Keys must be non-empty and may not contain '/' (the separator used in the persisted <scenario> / <name> entry)."
         }
       },
       "description": "Benchmark configuration for pnpm bench and pnpm bench:regression"
