@@ -6,21 +6,22 @@
   "commit": "19277969b5e67b5b55968422b4cba4029544807c",
   "packageManager": "yarn",
   "submodules": false,
+  "preinstall": "./preinstall-foundry.sh",
   "defaultCommand": "npx hardhat test solidity",
   "benchmark": {
     "commands": {
-      "cold compile": {
+      "forge build (cold)": {
         "runs": 5,
-        "prepare": "npx hardhat clean",
-        "command": "npx hardhat compile"
+        "prepare": "forge clean",
+        "command": "forge build"
       },
-      "warm compile": {
+      "forge build (warm)": {
         "runs": 55,
-        "command": "npx hardhat compile"
+        "command": "forge build"
       },
-      "test solidity": {
+      "forge test": {
         "runs": 83,
-        "command": "npx hardhat test solidity --no-compile"
+        "command": "forge test"
       }
     }
   }
