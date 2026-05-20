@@ -9,7 +9,8 @@
   "preinstall": "./preinstall-foundry.sh",
   "defaultCommand": "npx hardhat test solidity",
   "env": {
-    "FOUNDRY_PROFILE": "default"
+    "FOUNDRY_PROFILE": "default",
+    "PATH": "${localEnv:HOME}/.foundry/bin:${localEnv:PATH}"
   },
   "benchmark": {
     "commands": {

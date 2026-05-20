@@ -6,6 +6,9 @@
   "commit": "ab2b22eef19e0abe29d67420dde81b5d54455ae5",
   "packageManager": "pnpm",
   "submodules": true,
+  "env": {
+    "PATH": "${localEnv:HOME}/.foundry/bin:${localEnv:PATH}"
+  },
   "preinstall": "./preinstall-foundry.sh",
   "defaultCommand": "npx hardhat test solidity",
   "benchmark": {

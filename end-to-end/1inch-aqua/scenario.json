@@ -6,6 +6,9 @@
   "commit": "19277969b5e67b5b55968422b4cba4029544807c",
   "packageManager": "yarn",
   "submodules": false,
+  "env": {
+    "PATH": "${localEnv:HOME}/.foundry/bin:${localEnv:PATH}"
+  },
   "preinstall": "./preinstall-foundry.sh",
   "defaultCommand": "npx hardhat test solidity",
   "benchmark": {

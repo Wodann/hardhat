@@ -7,7 +7,8 @@
   "packageManager": "npm",
   "submodules": true,
   "env": {
-    "FOUNDRY_RPC_URL": "${localEnv:ALCHEMY_URL}"
+    "FOUNDRY_RPC_URL": "${localEnv:ALCHEMY_URL}",
+    "PATH": "${localEnv:HOME}/.foundry/bin:${localEnv:PATH}"
   },
   "preinstall": "./preinstall-foundry.sh",
   "defaultCommand": "npx hardhat test solidity",
