@@ -78,6 +78,8 @@ OPTIONS
                         potentially overwriting its current contents
   --e2e-clone-dir <p>   Override clone directory (default: same as pnpm e2e)
   --fail-fast           Abort on the first scenario failure
+  --show-output         Stream each step command's stdout/stderr (steps
+                        sequences only; suppressed by default, like hyperfine)
 
 EXAMPLES
   pnpm bench:regression --output /tmp/regression.json
@@ -96,6 +98,7 @@ interface RegressionArgs {
   forcePublish: ForcePublish;
   e2eCloneDirectory: string;
   failFast: boolean;
+  showOutput: boolean;
 }
 
 interface ScenarioEntry {
@@ -245,6 +248,8 @@ function resolveArgs(argv: string[]): RegressionArgs | undefined {
 
   const failFast = argv.includes("--fail-fast");
 
+  const showOutput = argv.includes("--show-output");
+
   const e2eCloneDirectory =
     getArgValue(argv, "--e2e-clone-dir") ??
     process.env.E2E_CLONE_DIR ??
@@ -259,6 +264,7 @@ function resolveArgs(argv: string[]): RegressionArgs | undefined {
     forcePublish,
     e2eCloneDirectory,
     failFast,
+    showOutput,
   };
 }
 
@@ -391,6 +397,7 @@ async function runScenario(
           loaded.definition.env,
           name,
           cfg,
+          args.showOutput,
         ),
       );
 
@@ -428,6 +435,7 @@ function runStepsPhase(
   env: Record<string, string> | undefined,
   seqName: string,
   cfg: StepsVariant,
+  showOutput: boolean,
 ): BenchmarkEntry[] {
   logStep(`${fmt.pkg(seqName)} (${cfg.runs} runs)`);
 
@@ -446,9 +454,12 @@ function runStepsPhase(
       const start = performance.now();
 
       try {
+        // Like hyperfine: suppress the benchmarked command's output unless
+        // --show-output is passed. "ignore" (not "pipe") avoids execSync's
+        // in-memory maxBuffer limit on compile-heavy steps.
         execSync(step.command, {
           cwd: workingDir,
-          stdio: "inherit",
+          stdio: showOutput ? "inherit" : "ignore",
           env: { ...process.env, ...env },
         });
       } catch (error) {
