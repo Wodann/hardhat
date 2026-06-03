@@ -79,8 +79,11 @@ function isCommandsMap(value: unknown): value is Record<string, CommandConfig> {
     return false;
   }
 
+  // Reject empty and integer-like keys so the declared command order is
+  // preserved (V8 iterates integer-like keys ahead of string keys).
   return (
-    keys.every((k) => k.length > 0) && Object.values(obj).every(isCommandConfig)
+    keys.every((k) => k.length > 0 && !INTEGER_LIKE_KEY.test(k)) &&
+    Object.values(obj).every(isCommandConfig)
   );
 }
 

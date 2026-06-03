@@ -254,6 +254,18 @@ describe("isScenarioDefinition", () => {
     );
   });
 
+  it("rejects an integer-like command key (would break order)", () => {
+    assert.equal(
+      isScenarioDefinition({
+        ...baseScenario,
+        benchmark: {
+          commands: { "1": { runs: 1, command: "npx hardhat compile" } },
+        },
+      }),
+      false,
+    );
+  });
+
   it("rejects benchmark.skip values other than true", () => {
     assert.equal(
       isScenarioDefinition({ ...baseScenario, benchmark: { skip: false } }),
