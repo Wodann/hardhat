@@ -16,7 +16,7 @@
         "runs": 3,
         "steps": {
           "reset files & cache": {
-            "command": "git checkout -- test/lib/CosignerLib.t.sol && git checkout -- test/reactors/V3DutchOrderReactor.t.sol && git checkout -- src/base/ReactorStructs.sol && npx hardhat clean",
+            "command": "git checkout -- test/lib/CosignerLib.t.sol test/reactors/V3DutchOrderReactor.t.sol src/base/ReactorStructs.sol && npx hardhat clean",
             "measure": false
           },
           "cold compile": {

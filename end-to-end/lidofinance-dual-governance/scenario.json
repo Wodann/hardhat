@@ -16,7 +16,7 @@
         "runs": 3,
         "steps": {
           "reset files & cache": {
-            "command": "git checkout -- test/unit/scripts/launch/TimeConstraints.t.sol && git checkout -- test/scenario/mainnet-launch.t.sol && git checkout -- contracts/types/Timestamp.sol && npx hardhat clean",
+            "command": "git checkout -- test/unit/scripts/launch/TimeConstraints.t.sol test/scenario/mainnet-launch.t.sol contracts/types/Timestamp.sol && npx hardhat clean",
             "measure": false
           },
           "cold compile": {

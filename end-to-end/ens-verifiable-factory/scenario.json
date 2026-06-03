@@ -13,7 +13,7 @@
         "runs": 13,
         "steps": {
           "reset files & cache": {
-            "command": "git checkout -- test/UUPSProxy.t.sol && git checkout -- test/VerifiableFactory.t.sol && git checkout -- src/VerifiableFactory.sol && npx hardhat clean",
+            "command": "git checkout -- test/UUPSProxy.t.sol test/VerifiableFactory.t.sol src/VerifiableFactory.sol && npx hardhat clean",
             "measure": false
           },
           "cold compile": {

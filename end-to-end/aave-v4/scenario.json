@@ -13,7 +13,7 @@
         "runs": 3,
         "steps": {
           "reset files & cache": {
-            "command": "git checkout -- tests/unit/WadRayMath.t.sol && git checkout -- tests/unit/Spoke/Liquidations/Spoke.LiquidationCall.t.sol && git checkout -- src/libraries/math/MathUtils.sol && npx hardhat clean",
+            "command": "git checkout -- tests/unit/WadRayMath.t.sol tests/unit/Spoke/Liquidations/Spoke.LiquidationCall.t.sol src/libraries/math/MathUtils.sol && npx hardhat clean",
             "measure": false
           },
           "cold compile": {

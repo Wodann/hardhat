@@ -13,7 +13,7 @@
         "runs": 3,
         "steps": {
           "reset files & cache": {
-            "command": "git checkout -- test/libraries/BitMath.t.sol && git checkout -- test/PoolManager.t.sol && git checkout -- src/types/Currency.sol && npx hardhat clean",
+            "command": "git checkout -- test/libraries/BitMath.t.sol test/PoolManager.t.sol src/types/Currency.sol && npx hardhat clean",
             "measure": false
           },
           "cold compile": {
