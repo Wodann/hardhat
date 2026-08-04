@@ -1,13 +1,46 @@
 {
   "$schema": "../../scripts/end-to-end/schema/scenario.schema.json",
-  "description": "OpenZeppelin contracts on Hardhat 2 (mocha test suite)",
-  "tags": ["external-repo", "hh2"],
+  "description": "OpenZeppelin contracts on Hardhat 2 (mocha test suite). Pinned to the master commit that the openzeppelin-contracts scenario's hardhat3 commit branches from, so the two are directly comparable.",
+  "tags": ["external-repo", "hh2", "mocha"],
   "repo": "OpenZeppelin/openzeppelin-contracts",
-  "commit": "45f032d1bcf1a88b7bc90154d7eef76c87bf9d45",
+  "commit": "cddec60c5de00b986c050d3a8d7202c900d57335",
   "packageManager": "npm",
   "submodules": true,
+  "preinstall": "./preinstall.sh",
+  "env": {
+    "NODE_OPTIONS": "--max-old-space-size=8192"
+  },
   "defaultCommand": "npx hardhat test",
   "benchmark": {
-    "skip": true
+    "skip": true,
+    "commands": {
+      "compile sequence": {
+        "runs": 3,
+        "steps": {
+          "reset files & cache": {
+            "command": "git checkout -- contracts/utils/math/Math.sol && npx hardhat clean",
+            "measure": false
+          },
+          "cold compile": {
+            "command": "npx hardhat compile",
+            "dependsOn": ["reset files & cache"]
+          },
+          "edit & compile Solidity contract: contracts/utils/math/Math.sol": {
+            "command": "printf \"\\n// hardhat benchmark edit\\n\" >> contracts/utils/math/Math.sol && npx hardhat compile",
+            "dependsOn": ["cold compile"]
+          }
+        }
+      },
+      "warm compile": {
+        "runs": 10,
+        "command": "npx hardhat compile",
+        "dependsOn": ["cold compile"]
+      },
+      "test mocha": {
+        "runs": 5,
+        "command": "timeout -k 15 200 npx hardhat test --no-compile || true",
+        "dependsOn": ["cold compile"]
+      }
+    }
   }
 }

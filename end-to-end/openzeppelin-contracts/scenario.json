@@ -7,42 +7,37 @@
   "packageManager": "npm",
   "submodules": true,
   "preinstall": "./preinstall.sh",
+  "env": {
+    "NODE_OPTIONS": "--max-old-space-size=8192"
+  },
   "defaultCommand": "npx hardhat test mocha",
   "benchmark": {
     "commands": {
       "compile sequence": {
-        "runs": 2,
+        "runs": 3,
         "steps": {
           "reset files & cache": {
-            "command": "git checkout -- test/utils/Base58.t.sol test/governance/extensions/GovernorSuperQuorumGreaterThanQuorum.t.sol contracts/utils/math/Math.sol && npx hardhat clean",
+            "command": "git checkout -- contracts/utils/math/Math.sol && npx hardhat clean",
             "measure": false
           },
           "cold compile": {
-            "command": "npx hardhat compile",
+            "command": "npx hardhat compile --no-tests",
             "dependsOn": ["reset files & cache"]
           },
-          "edit & compile Solidity test with min deps: test/utils/Base58.t.sol": {
-            "command": "printf \"\\n// hardhat benchmark edit\\n\" >> test/utils/Base58.t.sol && npx hardhat compile",
-            "dependsOn": ["cold compile"]
-          },
-          "edit & compile Solidity test with max deps: test/governance/extensions/GovernorSuperQuorumGreaterThanQuorum.t.sol": {
-            "command": "printf \"\\n// hardhat benchmark edit\\n\" >> test/governance/extensions/GovernorSuperQuorumGreaterThanQuorum.t.sol && npx hardhat compile",
-            "dependsOn": ["cold compile"]
-          },
           "edit & compile Solidity contract: contracts/utils/math/Math.sol": {
-            "command": "printf \"\\n// hardhat benchmark edit\\n\" >> contracts/utils/math/Math.sol && npx hardhat compile",
+            "command": "printf \"\\n// hardhat benchmark edit\\n\" >> contracts/utils/math/Math.sol && npx hardhat compile --no-tests",
             "dependsOn": ["cold compile"]
           }
         }
       },
       "warm compile": {
-        "runs": 2,
-        "command": "npx hardhat compile",
+        "runs": 10,
+        "command": "npx hardhat compile --no-tests",
         "dependsOn": ["cold compile"]
       },
       "test mocha": {
-        "runs": 2,
-        "command": "npx hardhat test mocha --no-compile",
+        "runs": 5,
+        "command": "timeout -k 15 200 npx hardhat test mocha --no-compile || true",
         "dependsOn": ["cold compile"]
       }
     }

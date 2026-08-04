@@ -43,9 +43,9 @@ scripts/benchmark/regression.ts — Multi-scenario regression benchmark
 
 DESCRIPTION
   For each scenario under end-to-end/ that is not disabled and does not opt
-  out via "benchmark": { "skip": true }, runs every command declared in
-  "benchmark": { "commands": { ... } } in the order they appear in
-  scenario.json. Each command entry is one of two shapes:
+  out via "benchmark": { "skip": true } (see --include-skipped), runs every
+  command declared in "benchmark": { "commands": { ... } } in the order they
+  appear in scenario.json. Each command entry is one of two shapes:
 
     // single command, benchmarked with hyperfine
     {
@@ -98,6 +98,11 @@ OPTIONS
                         (comma-separated globs, e.g. "test solidity" or
                         "*compile*"). A name is the report label's second segment
                         (single command name or step name). Default: all.
+  --include-skipped     Also run scenarios that opt out via
+                        "benchmark": { "skip": true }, provided they declare
+                        "commands". Intended for local one-off studies; CI never
+                        passes it, so skipped scenarios stay out of the tracked
+                        baselines.
   --use-local           Detect packages changed since their release tag, bump
                         versions, publish to Verdaccio, and pin scenario deps to
                         the published versions.
@@ -144,6 +149,7 @@ interface RegressionArgs {
   scenarios: string[] | undefined;
   tag: string | undefined;
   benchmarks: string[] | undefined;
+  includeSkipped: boolean;
   useLocal: UseLocal;
   forceCheckout: ForceCheckout;
   forcePublish: ForcePublish;
@@ -301,6 +307,8 @@ function resolveArgs(argv: string[]): RegressionArgs | undefined {
 
   const benchmarks = parseGlobList(getArgValue(argv, "--benchmarks"));
 
+  const includeSkipped = argv.includes("--include-skipped");
+
   const useLocal = argv.includes("--use-local") ? UseLocal.Yes : UseLocal.No;
 
   const forceCheckout = argv.includes("--force-checkout")
@@ -323,6 +331,7 @@ function resolveArgs(argv: string[]): RegressionArgs | undefined {
     scenarios,
     tag,
     benchmarks,
+    includeSkipped,
     useLocal,
     forceCheckout,
     forcePublish,
@@ -382,9 +391,21 @@ function collectScenarios(args: RegressionArgs): ScenarioEntry[] {
     }
 
     if (definition.benchmark?.skip === true) {
-      logWarning(`Skipping "${entry.name}" (benchmark.skip is set)`);
+      if (!args.includeSkipped) {
+        logWarning(`Skipping "${entry.name}" (benchmark.skip is set)`);
 
-      continue;
+        continue;
+      }
+
+      // --include-skipped opts skipped scenarios back in, but a scenario that
+      // opts out via `skip` alone has no commands to run.
+      if (definition.benchmark.commands === undefined) {
+        logWarning(
+          `Skipping "${entry.name}" (benchmark.skip is set and it declares no commands)`,
+        );
+
+        continue;
+      }
     }
 
     if (!matchesAny(entry.name, scenarioRes)) {
