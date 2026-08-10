@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { gunzipSync } from "node:zlib";
 import {
+  MemorySampler,
   decodeSeriesTable,
   deltaDecode,
   deltaEncode,
@@ -13,6 +14,33 @@ import {
   treeTotalMb,
   type MemorySample,
 } from "./mem-series.ts";
+
+describe("MemorySampler", () => {
+  it("streams anchors and samples to the sink as they are taken", () => {
+    const lines: string[] = [];
+    const sampler = new MemorySampler((line) => lines.push(line));
+
+    // Sampling this test's own process: start() takes the first sample
+    // synchronously, so no waiting is needed.
+    sampler.start(process.pid);
+    const series = sampler.stop();
+
+    assert.ok(series.startEpochMs > 0);
+    assert.ok(series.monoStartNs > 0n);
+    assert.equal(series.samples.length, 1);
+
+    assert.equal(lines.length, 2);
+    assert.ok(lines.every((line) => line.endsWith("\n")));
+
+    const meta = JSON.parse(lines[0]);
+    assert.equal(meta.meta.startEpochMs, series.startEpochMs);
+    assert.equal(meta.meta.monoStartNs, String(series.monoStartNs));
+
+    const sample = JSON.parse(lines[1]);
+    assert.equal(typeof sample.tMs, "number");
+    assert.ok(Object.values(sample.byLabel).every((mb) => Number(mb) > 0));
+  });
+});
 
 describe("processLabel", () => {
   it("labels a plain binary by its basename", () => {

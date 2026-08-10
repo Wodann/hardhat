@@ -45,6 +45,14 @@ export interface MemorySample {
 export interface MemorySeries {
   samples: MemorySample[];
   peakRssMb: number;
+  /** Date.now() when sampling started — anchors in-process sample merging. */
+  startEpochMs: number;
+  /**
+   * process.hrtime.bigint() when sampling started (CLOCK_MONOTONIC on Linux,
+   * the clock `perf record -k CLOCK_MONOTONIC` stamps samples with) — anchors
+   * series time onto perf.data time.
+   */
+  monoStartNs: bigint;
 }
 
 // Script basenames too generic to identify a process; label these by their
@@ -175,7 +183,15 @@ export function toSeriesTable(samples: MemorySample[]): SeriesTable {
   return { tMs: samples.map((s) => Math.round(s.tMs)), byProcess };
 }
 
-/** The pivoted series of one run: a shared time axis + one series per label. */
+/**
+ * The pivoted series of one run: a shared time axis + one series per label.
+ *
+ * Labels containing `":"` are metric labels — in-process measurements (e.g.
+ * `hardhat:v8-heap`, `hardhat:edr-commit`) layered onto the process label
+ * before the colon. They describe memory already counted in that process's
+ * RSS, so tree totals must skip them; `processLabel` never produces a `":"`,
+ * keeping the two namespaces disjoint.
+ */
 export interface SeriesTable {
   tMs: number[];
   byProcess: Record<string, number[]>;
@@ -268,15 +284,37 @@ export function treeTotalMb(sample: MemorySample): number {
  * Samples the process tree rooted at a PID on a fixed interval. Usage:
  * construct, `start(pid)` right after spawning, `stop()` after the child
  * exits. The interval timer is unref'd so it never keeps the driver alive.
+ *
+ * The optional `sink` receives one JSON line (newline-terminated) per sample
+ * as it is taken, preceded by a `{"meta": ...}` line carrying the time
+ * anchors — an append-to-disk sink preserves the series even when neither
+ * `stop()` nor the driver survive (child OOM kill, driver kill).
  */
 export class MemorySampler {
   private samples: MemorySample[] = [];
   private peakRssKb: number = 0;
   private timer: NodeJS.Timeout | undefined;
   private startedAt: number = 0;
+  private startEpochMs: number = 0;
+  private monoStartNs: bigint = 0n;
+  private readonly sink: ((line: string) => void) | undefined;
+
+  constructor(sink?: (line: string) => void) {
+    this.sink = sink;
+  }
 
   public start(rootPid: number): void {
     this.startedAt = performance.now();
+    this.startEpochMs = Date.now();
+    this.monoStartNs = process.hrtime.bigint();
+    this.sink?.(
+      `${JSON.stringify({
+        meta: {
+          startEpochMs: this.startEpochMs,
+          monoStartNs: String(this.monoStartNs),
+        },
+      })}\n`,
+    );
     this.sample(rootPid);
     this.timer = setInterval(() => this.sample(rootPid), SAMPLE_INTERVAL_MS);
     this.timer.unref();
@@ -291,6 +329,8 @@ export class MemorySampler {
     return {
       samples: this.samples,
       peakRssMb: Math.round(this.peakRssKb / 1024),
+      startEpochMs: this.startEpochMs,
+      monoStartNs: this.monoStartNs,
     };
   }
 
@@ -326,7 +366,14 @@ export class MemorySampler {
     // The whole tree already exited (e.g. a timer tick between the root's
     // exit and stop()) — an empty sample carries no information.
     if (byLabel.size > 0) {
-      this.samples.push({ tMs: performance.now() - this.startedAt, byLabel });
+      const sample = { tMs: performance.now() - this.startedAt, byLabel };
+      this.samples.push(sample);
+      this.sink?.(
+        `${JSON.stringify({
+          tMs: Math.round(sample.tMs),
+          byLabel: Object.fromEntries(sample.byLabel),
+        })}\n`,
+      );
     }
   }
 }

@@ -44,6 +44,7 @@
     "e2e": "node ./scripts/end-to-end/main.ts",
     "bench": "node ./scripts/benchmark/main.ts",
     "bench:regression": "node ./scripts/benchmark/regression.ts",
-    "bench:render:mem-series": "node ./scripts/benchmark/render-mem-series.ts"
+    "bench:render:mem-series": "node ./scripts/benchmark/render-mem-series.ts",
+    "bench:flamegraph": "node ./scripts/benchmark/flamegraph.ts"
   }
 }

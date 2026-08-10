@@ -218,9 +218,16 @@ function tableToLines(table: SeriesTable): ChartLine[] {
   return lines;
 }
 
+// Metric labels ("hardhat:v8-heap" — see the convention on SeriesTable)
+// break down memory already counted in their process's RSS line, so the
+// tree total sums process labels only.
 function sumByProcess(table: SeriesTable): number[] {
+  const processSeries = Object.entries(table.byProcess)
+    .filter(([label]) => !label.includes(":"))
+    .map(([, mb]) => mb);
+
   return table.tMs.map((_, i) =>
-    Object.values(table.byProcess).reduce((sum, mb) => sum + (mb[i] ?? 0), 0),
+    processSeries.reduce((sum, mb) => sum + (mb[i] ?? 0), 0),
   );
 }
 

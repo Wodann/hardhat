@@ -1,5 +1,11 @@
 // cSpell:ignore cacache <-- NPM's content-addressable cache
-import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -33,10 +39,12 @@ import {
 import {
   CommandFailedError,
   formatOutput,
+  measuredRunTable,
   runMeasured,
   runPlain,
   runSeries,
   shellQuote,
+  type Instrumentation,
   type MeasuredRun,
 } from "./helpers/runner.ts";
 import {
@@ -139,6 +147,15 @@ OPTIONS
                         potentially overwriting its current contents
   --e2e-clone-dir <p>   Override clone directory (default: same as pnpm e2e)
   --fail-fast           Abort on the first scenario failure
+  --out-dir <dir>       Write per-run artifacts (run.json, streamed
+                        proc.ndjson) to <dir>/<scenario>/<name>/run-NNN/ —
+                        they survive a failed run, which still aborts the
+                        scenario as usual
+  --mem-internals       Additionally inject the in-process memory sampler
+                        into measured runs (V8 heap/external and, with a
+                        memory-stats EDR build, EDR's mimalloc commit); the
+                        metrics merge into the reported series as
+                        <label>:<metric>. See pnpm bench's USAGE for details
 
   --benchmarks selects which measured entries you want reported. Because entries
   run as a stateful pipeline (later ones depend on earlier ones having run — e.g.
@@ -179,6 +196,8 @@ interface RegressionArgs {
   forcePublish: ForcePublish;
   e2eCloneDirectory: string;
   failFast: boolean;
+  outDir: string | undefined;
+  memInternals: boolean;
 }
 
 interface ScenarioEntry {
@@ -347,6 +366,16 @@ function resolveArgs(argv: string[]): RegressionArgs | undefined {
     process.env.E2E_CLONE_DIR ??
     DEFAULT_CLONE_DIR;
 
+  const outDirRaw = getArgValue(argv, "--out-dir");
+  const memInternals = argv.includes("--mem-internals");
+
+  const outDir =
+    outDirRaw !== undefined
+      ? path.resolve(outDirRaw)
+      : memInternals
+        ? mkdtempSync(path.join(tmpdir(), "hardhat-regression-artifacts-"))
+        : undefined;
+
   return {
     output: path.resolve(output),
     scenarios,
@@ -357,6 +386,8 @@ function resolveArgs(argv: string[]): RegressionArgs | undefined {
     forcePublish,
     e2eCloneDirectory,
     failFast,
+    outDir,
+    memInternals,
   };
 }
 
@@ -491,6 +522,14 @@ async function runScenario(
 
   const entries: BenchmarkEntry[] = [];
 
+  const instrumentationFor = (name: string): Instrumentation | undefined =>
+    args.outDir === undefined
+      ? undefined
+      : {
+          outDir: path.join(args.outDir, scenario.id, slugify(name)),
+          memInternals: args.memInternals,
+        };
+
   for (const planned of plan) {
     if ("run" in planned) {
       entries.push(
@@ -504,6 +543,7 @@ async function runScenario(
           new Set(planned.run),
           new Set(planned.once),
           new Set(planned.emit),
+          instrumentationFor(planned.name),
         )),
       );
 
@@ -519,6 +559,7 @@ async function runScenario(
         planned.name,
         planned.cfg,
         planned.emit,
+        instrumentationFor(planned.name),
       )),
     );
   }
@@ -541,6 +582,7 @@ async function runCommandPhase(
   name: string,
   cfg: CommandVariant,
   emit: boolean,
+  instrumentation: Instrumentation | undefined,
 ): Promise<BenchmarkEntry[]> {
   const runs = emit ? cfg.runs : 1;
 
@@ -560,7 +602,13 @@ async function runCommandPhase(
     const runs = await runSeries(
       cfg.command,
       path.join(scenarioTmpDir, `${slugify(name)}-cpu.txt`),
-      { cwd: workingDir, env, runs: cfg.runs, prepare: cfg.prepare },
+      {
+        cwd: workingDir,
+        env,
+        runs: cfg.runs,
+        prepare: cfg.prepare,
+        instrumentation,
+      },
     );
 
     return measuredRunsToEntries(scenarioId, name, runs);
@@ -597,6 +645,7 @@ async function runStepsPhase(
   runSteps: Set<string>,
   onceSteps: Set<string>,
   emit: Set<string>,
+  instrumentation: Instrumentation | undefined,
 ): Promise<BenchmarkEntry[]> {
   const totalSteps = Object.keys(cfg.steps).length;
   const stepNames = Object.keys(cfg.steps).filter((n) => runSteps.has(n));
@@ -640,6 +689,17 @@ async function runStepsPhase(
             await runMeasured(step.command, timingPath, {
               cwd: workingDir,
               env,
+              instrumentation:
+                instrumentation !== undefined
+                  ? {
+                      ...instrumentation,
+                      runDir: path.join(
+                        instrumentation.outDir,
+                        slugify(stepName),
+                        `run-${String(run).padStart(3, "0")}`,
+                      ),
+                    }
+                  : undefined,
             }),
           );
         } else {
@@ -832,7 +892,10 @@ function toMemOverTimeEntries(
   );
   const representative = pickRepresentativeRun(summaries.map((s) => s[4]));
   const p50Stats = computeStats(summaries.map((s) => s[2]));
-  const table = toSeriesTable(defined[representative].samples);
+  // Includes the in-process metric labels when --mem-internals sampled them.
+  const table =
+    measuredRunTable(runs[representative]) ??
+    toSeriesTable(defined[representative].samples);
 
   return [
     {

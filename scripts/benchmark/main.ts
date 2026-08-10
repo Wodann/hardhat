@@ -8,8 +8,14 @@ import { loadScenario } from "../end-to-end/helpers/directory.ts";
 import { resolveAndValidateArgs, type BenchArgs } from "./helpers/args.ts";
 import { fmt, log, logStep, logError, logWarning } from "./helpers/log.ts";
 import { computeStats, mean } from "./helpers/stats.ts";
-import { runSeries, type MeasuredRun } from "./helpers/runner.ts";
-import { procSamplingAvailable, toSeriesTable } from "./helpers/mem-series.ts";
+import {
+  measuredRunTable,
+  runSeries,
+  type Instrumentation,
+  type MeasuredRun,
+} from "./helpers/runner.ts";
+import { procSamplingAvailable } from "./helpers/mem-series.ts";
+import { DEFAULT_FAULT_PERIOD } from "./helpers/perf-faults.ts";
 
 const USAGE = `
 scripts/benchmark/main.ts — Benchmark Hardhat scenarios
@@ -47,16 +53,56 @@ OPTIONS
   --warmup <n>          Unmeasured warmup runs before benchmarking (default: 0).
                         Useful for filling disk caches for I/O-heavy programs
   --runs <n>            Number of benchmark runs (default: 10)
-  --ignore-failure      Ignore non-zero exit codes of the benchmarked command
+  --ignore-failure      Keep going when the benchmarked command fails; the
+                        failed run keeps its (partial) measurements and is
+                        flagged in the report and the JSON export
   --show-output         Print stdout and stderr of the benchmarked command
   --export-json <path>  Write a hyperfine-compatible JSON report to PATH,
                         extended with each run's memory series
   --e2e-clone-dir <p>   Override clone directory (default: same as pnpm e2e)
+  --env KEY=VALUE       Extra environment for the benchmarked command, on top
+                        of the scenario's env map (repeatable)
+
+MEMORY ATTRIBUTION
+  These options collect per-run artifacts in <out-dir>/run-NNN/, written
+  continuously while the run executes — an OOM-killed run (or driver) keeps
+  everything but the sample in flight. Note that instrumentation overhead is
+  included in the reported wall/CPU times: treat instrumented runs as memory
+  diagnostics, not timing benchmarks.
+
+  --out-dir <dir>       Per-run artifact directory. Alone, it streams the
+                        /proc series (proc.ndjson) and writes a run.json
+                        summary per run. Defaults to a temp dir when other
+                        instrumentation flags are given without it
+  --mem-internals       Inject an in-process sampler (NODE_OPTIONS --require)
+                        into every node process of the run: V8 heap/external
+                        breakdown plus EDR's mimalloc-committed memory when a
+                        memory-stats EDR build is loaded (see
+                        NAPI_RS_NATIVE_LIBRARY_PATH). Sample interval:
+                        HARDHAT_BENCH_INTERNALS_INTERVAL_MS (default 100);
+                        periodic mimalloc reports:
+                        HARDHAT_BENCH_MEM_REPORT_INTERVAL_MS (default: exit
+                        only). Merged into the series as <label>:<metric>
+  --perf-faults         Record a page-fault profile (perf record
+                        -e page-faults -g) of the whole run — RSS growth
+                        attributed to native call stacks. Render with
+                        pnpm bench:flamegraph <run-dir>
+  --perf-faults-period <n>
+                        Faults per call-graph sample (default: ${DEFAULT_FAULT_PERIOD},
+                        i.e. one stack per ~4 MiB of first-touched pages)
 
 EXAMPLES
   pnpm bench --scenario ./end-to-end/uniswap-v4-core --runs 1
   pnpm bench --scenario ./end-to-end/uniswap-v4-core --use-local --precompile
   pnpm bench --scenario ./end-to-end/openzeppelin-contracts --command "npx hardhat compile"
+
+  # Memory attribution of a run that is expected to OOM: EDR memory-stats
+  # build injected, in-process sampling, page-fault profile, artifacts kept.
+  pnpm bench --scenario ./end-to-end/lidofinance-core --runs 1 \\
+    --command "npx hardhat test solidity -vvvv" --ignore-failure \\
+    --mem-internals --perf-faults --out-dir /tmp/lido-mem/vvvv \\
+    --env NAPI_RS_NATIVE_LIBRARY_PATH=/path/to/edr.linux-x64-gnu.node \\
+    --export-json /tmp/lido-mem/vvvv.json
 `;
 
 export async function runBenchmark(benchArgs: BenchArgs): Promise<void> {
@@ -74,6 +120,10 @@ export async function runBenchmark(benchArgs: BenchArgs): Promise<void> {
     warmup,
     exportJson,
     e2eCloneDirectory,
+    memInternals,
+    perfFaults,
+    perfFaultsPeriod,
+    env,
   } = benchArgs;
 
   const scenario = loadScenario(e2eCloneDirectory, scenarioPath);
@@ -125,14 +175,33 @@ export async function runBenchmark(benchArgs: BenchArgs): Promise<void> {
     "cpu.txt",
   );
 
+  let outDir = benchArgs.outDir;
+
+  if (outDir === undefined && (memInternals || perfFaults)) {
+    outDir = mkdtempSync(path.join(tmpdir(), "hardhat-bench-artifacts-"));
+    log(`Writing per-run artifacts to ${outDir}`);
+  }
+
+  const instrumentation: Instrumentation | undefined =
+    outDir !== undefined
+      ? {
+          outDir,
+          memInternals,
+          perfFaults: perfFaults
+            ? { periodFaults: perfFaultsPeriod ?? DEFAULT_FAULT_PERIOD }
+            : undefined,
+        }
+      : undefined;
+
   const measured = await runSeries(benchCommand, timingPath, {
     cwd: scenario.workingDir,
-    env: scenario.definition.env,
+    env: { ...scenario.definition.env, ...env },
     runs,
     warmup,
     prepare,
     ignoreFailure,
     showOutput,
+    instrumentation,
   });
 
   report(measured);
@@ -146,16 +215,25 @@ export async function runBenchmark(benchArgs: BenchArgs): Promise<void> {
 }
 
 function report(measured: MeasuredRun[]): void {
-  const stats = computeStats(measured.map((r) => r.wallSeconds));
   const seconds = (s: number) => `${s.toFixed(3)} s`;
+  const succeeded = measured.filter((r) => r.failure === undefined);
 
-  log(`  Time (mean ± σ):   ${seconds(stats.mean)} ± ${seconds(stats.stddev)}`);
-  log(
-    `  Range (min … max): ${seconds(stats.min)} … ${seconds(stats.max)}  (${measured.length} runs)`,
-  );
-  log(
-    `  CPU (user, system): ${seconds(mean(measured.map((r) => r.user)))}, ${seconds(mean(measured.map((r) => r.system)))}`,
-  );
+  // Timing statistics describe successful runs only — a killed run's wall
+  // time measures the kill, not the command. Peaks and series are still
+  // reported for every run.
+  if (succeeded.length > 0) {
+    const stats = computeStats(succeeded.map((r) => r.wallSeconds));
+
+    log(
+      `  Time (mean ± σ):   ${seconds(stats.mean)} ± ${seconds(stats.stddev)}`,
+    );
+    log(
+      `  Range (min … max): ${seconds(stats.min)} … ${seconds(stats.max)}  (${succeeded.length} runs)`,
+    );
+    log(
+      `  CPU (user, system): ${seconds(mean(succeeded.map((r) => r.user)))}, ${seconds(mean(succeeded.map((r) => r.system)))}`,
+    );
+  }
 
   const peaks = measured
     .map((r) => r.memory?.peakRssMb)
@@ -164,16 +242,40 @@ function report(measured: MeasuredRun[]): void {
   if (peaks.length === measured.length) {
     log(`  Peak RSS:          ${Math.max(...peaks)} MB`);
   }
+
+  for (const [i, run] of measured.entries()) {
+    if (run.failure === undefined) {
+      continue;
+    }
+
+    const reason =
+      run.failure.signal !== null
+        ? `killed by ${run.failure.signal}`
+        : `exited with code ${String(run.failure.exitCode)}`;
+    const series =
+      run.memory !== undefined
+        ? ` — series kept (${run.memory.peakRssMb} MB peak)`
+        : "";
+
+    logWarning(
+      `run ${i}: ${reason} after ${seconds(run.wallSeconds)}${series}`,
+    );
+  }
 }
 
 /**
- * Render the report in hyperfine's --export-json shape ({ results: [{ times,
- * mean, stddev, min, max, median, user, system }] }) so downstream consumers
- * keep working, extended with each run's memory series (`memory[i]` holds the
- * i-th run's exact peak and its per-process series over a shared time axis).
+ * Render the report in hyperfine's --export-json shape ({ times, mean,
+ * stddev, min, max, median, user, system }) so downstream consumers keep
+ * working, extended with each run's memory series (`memory[i]` holds the
+ * i-th run's exact peak and its per-process series over a shared time axis,
+ * including the in-process metric labels when --mem-internals sampled them).
+ * A failed run's entry additionally carries `failed: { exitCode, signal }`;
+ * its timing is excluded from the hyperfine statistics.
  */
 function buildExport(command: string, measured: MeasuredRun[]): string {
-  const stats = computeStats(measured.map((r) => r.wallSeconds));
+  const succeeded = measured.filter((r) => r.failure === undefined);
+  const timed = succeeded.length > 0 ? succeeded : measured;
+  const stats = computeStats(timed.map((r) => r.wallSeconds));
 
   return JSON.stringify(
     {
@@ -183,8 +285,8 @@ function buildExport(command: string, measured: MeasuredRun[]): string {
           mean: stats.mean,
           stddev: stats.stddev,
           median: stats.median,
-          user: mean(measured.map((r) => r.user)),
-          system: mean(measured.map((r) => r.system)),
+          user: mean(timed.map((r) => r.user)),
+          system: mean(timed.map((r) => r.system)),
           min: stats.min,
           max: stats.max,
           times: stats.times,
@@ -192,7 +294,8 @@ function buildExport(command: string, measured: MeasuredRun[]): string {
             r.memory !== undefined
               ? {
                   peakRssMb: r.memory.peakRssMb,
-                  ...toSeriesTable(r.memory.samples),
+                  ...measuredRunTable(r),
+                  ...(r.failure !== undefined ? { failed: r.failure } : {}),
                 }
               : null,
           ),

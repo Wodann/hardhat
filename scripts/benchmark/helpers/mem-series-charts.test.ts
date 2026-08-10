@@ -96,6 +96,56 @@ describe("collectCharts", () => {
     assert.deepEqual(charts[0].runs[0].total, [100, 125, 150, 160, 170]);
   });
 
+  it("excludes metric labels from the tree total", () => {
+    const { charts } = collectCharts({
+      results: [
+        {
+          command: "npx hardhat test",
+          memory: [
+            {
+              peakRssMb: 200,
+              tMs: [0, 100],
+              byProcess: {
+                hardhat: [100, 200],
+                // In-process metrics describe memory already inside the
+                // hardhat line's RSS — summing them would double-count.
+                "hardhat:v8-heap": [40, 80],
+                "hardhat:edr-commit": [20, 60],
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    assert.deepEqual(
+      charts[0].lines.find((l) => l.kind === "total")?.mb,
+      [100, 200],
+    );
+    assert.deepEqual(charts[0].runs[0].total, [100, 125, 150, 175, 200]);
+  });
+
+  it("renders a failed run's partial series", () => {
+    const { charts } = collectCharts({
+      results: [
+        {
+          command: "npx hardhat test",
+          memory: [
+            {
+              peakRssMb: 300,
+              tMs: [0, 100],
+              byProcess: { hardhat: [100, 300] },
+              failed: { exitCode: null, signal: "SIGKILL" },
+            },
+          ],
+        },
+      ],
+    });
+
+    assert.equal(charts.length, 1);
+    assert.equal(charts[0].runs[0].peakRssMb, 300);
+  });
+
   it("skips entries and runs without memory data", () => {
     assert.deepEqual(
       collectCharts([{ name: "x / y", extra: "{}" }]).charts,

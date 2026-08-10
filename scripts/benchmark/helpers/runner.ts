@@ -1,5 +1,14 @@
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  closeSync,
+  mkdirSync,
+  mkdtempSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { performance } from "node:perf_hooks";
 import path from "node:path";
@@ -7,8 +16,17 @@ import path from "node:path";
 import {
   MemorySampler,
   procSamplingAvailable,
+  toSeriesTable,
   type MemorySeries,
+  type SeriesTable,
 } from "./mem-series.ts";
+import {
+  internalsEnv,
+  mergeInternals,
+  readInternalsDir,
+  type InternalsProcess,
+} from "./mem-internals.ts";
+import { wrapWithPerf } from "./perf-faults.ts";
 
 /**
  * The measured command runner shared by regression.ts and main.ts.
@@ -20,6 +38,12 @@ import {
  *   reads the exact child rusage the kernel reports at wait(), with zero
  *   startup overhead; Node exposes no child rusage of its own),
  * - the memory-over-time series and exact peak RSS via {@link MemorySampler}.
+ *
+ * With {@link Instrumentation} configured, a run additionally gets a per-run
+ * artifact directory that is written *while the run executes* (streamed /proc
+ * samples, in-process NDJSON samples, perf.data) plus a `run.json` summary
+ * written before any failure propagates — so an OOM-killed run, or even a
+ * killed driver, loses at most the sample in flight.
  */
 
 // The default 1 MiB pipe buffer of execSync would make chatty-but-successful
@@ -34,8 +58,34 @@ export interface RunOptions {
   env?: Record<string, string>;
   /** Print the command's stdout/stderr instead of capturing it. */
   showOutput?: boolean;
-  /** Treat a non-zero exit code as success. */
+  /** Continue on a non-zero exit code, recording the failure. */
   ignoreFailure?: boolean;
+}
+
+export interface MeasureOptions extends RunOptions {
+  /** Per-run artifact collection; see {@link Instrumentation}. */
+  instrumentation?: RunInstrumentation;
+}
+
+/** What to collect per measured run, and where the artifacts root is. */
+export interface Instrumentation {
+  /** Root directory; runSeries creates a run-NNN subdirectory per run. */
+  outDir: string;
+  /** Inject the in-process memory sampler (V8 heap / external / EDR). */
+  memInternals: boolean;
+  /** Profile page faults (RSS growth attribution) with perf record. */
+  perfFaults?: { periodFaults: number };
+}
+
+/** {@link Instrumentation} resolved to one measured run's directory. */
+export interface RunInstrumentation extends Instrumentation {
+  runDir: string;
+}
+
+/** How a failed command ended: its exit code, or the signal that killed it. */
+export interface RunFailure {
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
 }
 
 export interface MeasuredRun {
@@ -47,6 +97,28 @@ export interface MeasuredRun {
   system: number;
   /** Memory series + exact peak; undefined when /proc is unavailable. */
   memory: MemorySeries | undefined;
+  /** In-process samples, one entry per sampled process (memInternals). */
+  internals?: InternalsProcess[];
+  /** Set when the command failed and `ignoreFailure` kept the run. */
+  failure?: RunFailure;
+  /** This run's artifact directory, when instrumentation was configured. */
+  runDir?: string;
+}
+
+/**
+ * A measured run's series table for reports: the /proc series pivoted per
+ * label, with the in-process metric labels merged in when collected.
+ */
+export function measuredRunTable(run: MeasuredRun): SeriesTable | undefined {
+  if (run.memory === undefined) {
+    return undefined;
+  }
+
+  const table = toSeriesTable(run.memory.samples);
+
+  return run.internals !== undefined && run.internals.length > 0
+    ? mergeInternals(table, run.memory.startEpochMs, run.internals)
+    : table;
 }
 
 /**
@@ -56,7 +128,11 @@ export async function runPlain(
   command: string,
   options: RunOptions,
 ): Promise<void> {
-  await execute(command, options);
+  const outcome = await execute(command, options);
+
+  if (outcomeFailure(outcome) !== undefined && options.ignoreFailure !== true) {
+    throw commandFailedError(outcome);
+  }
 }
 
 /**
@@ -64,30 +140,158 @@ export async function runPlain(
  *
  * `timingPath` is where bash's `time` builtin writes its report; callers pass
  * a path in their temp dir so a crashed run leaves diagnosable state behind.
+ * With instrumentation, the report moves into the run directory instead.
+ *
+ * A failed command still produces its measurements and artifacts; without
+ * `ignoreFailure` the failure is thrown only after `run.json` is on disk.
  */
 export async function runMeasured(
   command: string,
   timingPath: string,
-  options: RunOptions,
+  options: MeasureOptions,
 ): Promise<MeasuredRun> {
   const calibration = await shellSpawnOverheadSeconds();
+  const instrumentation = options.instrumentation;
 
-  const sampler = procSamplingAvailable() ? new MemorySampler() : undefined;
-  const { wallSeconds } = await execute(
-    wrapWithCpuTiming(command, timingPath),
-    options,
-    sampler,
-  );
-  const memory = sampler?.stop();
+  const effectiveTimingPath =
+    instrumentation !== undefined
+      ? path.join(instrumentation.runDir, "cpu.txt")
+      : timingPath;
 
-  const cpu = parseCpuTiming(readFileSync(timingPath, "utf-8"), timingPath);
+  // A failed run must never be reported with the previous run's CPU times.
+  rmSync(effectiveTimingPath, { force: true });
 
-  return {
-    wallSeconds: Math.max(0, wallSeconds - calibration),
+  let effectiveCommand = command;
+  let env = options.env;
+  let procFd: number | undefined;
+
+  if (instrumentation !== undefined) {
+    mkdirSync(instrumentation.runDir, { recursive: true });
+
+    if (instrumentation.perfFaults !== undefined) {
+      effectiveCommand = wrapWithPerf(
+        effectiveCommand,
+        path.join(instrumentation.runDir, "perf.data"),
+        instrumentation.perfFaults.periodFaults,
+      );
+    }
+
+    if (instrumentation.memInternals) {
+      env = {
+        ...env,
+        ...internalsEnv(
+          path.join(instrumentation.runDir, "internals"),
+          env?.NODE_OPTIONS ?? process.env.NODE_OPTIONS,
+        ),
+      };
+    }
+
+    procFd = openSync(path.join(instrumentation.runDir, "proc.ndjson"), "a");
+  }
+
+  const sink =
+    procFd !== undefined
+      ? (line: string) => writeSync(procFd, line)
+      : undefined;
+
+  const sampler = procSamplingAvailable() ? new MemorySampler(sink) : undefined;
+
+  let outcome: ExecOutcome;
+  let memory: MemorySeries | undefined;
+
+  try {
+    outcome = await execute(
+      wrapWithCpuTiming(effectiveCommand, effectiveTimingPath),
+      { ...options, env },
+      sampler,
+    );
+  } finally {
+    // Also runs when execute() rejected on a spawn error: the sampler's
+    // timer must not leak and the proc.ndjson stream must be closed.
+    memory = sampler?.stop();
+
+    if (procFd !== undefined) {
+      closeSync(procFd);
+    }
+  }
+
+  const failure = outcomeFailure(outcome);
+
+  let cpu = { user: 0, system: 0 };
+
+  try {
+    cpu = parseCpuTiming(
+      readFileSync(effectiveTimingPath, "utf-8"),
+      effectiveTimingPath,
+    );
+  } catch (error) {
+    // A killed run may die before bash's time report is written; the run is
+    // still reported (with zero CPU). A successful run must have one.
+    if (failure === undefined) {
+      throw error;
+    }
+  }
+
+  const run: MeasuredRun = {
+    wallSeconds: Math.max(0, outcome.wallSeconds - calibration),
     user: cpu.user,
     system: cpu.system,
     memory,
+    failure,
+    runDir: instrumentation?.runDir,
   };
+
+  if (instrumentation?.memInternals === true) {
+    run.internals = readInternalsDir(
+      path.join(instrumentation.runDir, "internals"),
+    );
+  }
+
+  if (instrumentation !== undefined) {
+    writeRunArtifact(instrumentation.runDir, command, run);
+  }
+
+  if (failure !== undefined && options.ignoreFailure !== true) {
+    throw commandFailedError(outcome);
+  }
+
+  return run;
+}
+
+/**
+ * One run's `run.json`: the measurements plus the anchors needed to relate
+ * the artifacts next to it (proc.ndjson, internals/, perf.data) to each
+ * other. Written for successful and failed runs alike, before any throw.
+ */
+function writeRunArtifact(
+  runDir: string,
+  command: string,
+  run: MeasuredRun,
+): void {
+  writeFileSync(
+    path.join(runDir, "run.json"),
+    JSON.stringify(
+      {
+        command,
+        failure: run.failure ?? null,
+        wallSeconds: run.wallSeconds,
+        user: run.user,
+        system: run.system,
+        startEpochMs: run.memory?.startEpochMs ?? null,
+        monoStartNs:
+          run.memory !== undefined ? String(run.memory.monoStartNs) : null,
+        memory:
+          run.memory !== undefined
+            ? {
+                peakRssMb: run.memory.peakRssMb,
+                ...measuredRunTable(run),
+              }
+            : null,
+      },
+      null,
+      2,
+    ),
+  );
 }
 
 export interface SeriesOptions extends RunOptions {
@@ -97,6 +301,7 @@ export interface SeriesOptions extends RunOptions {
   warmup?: number;
   /** Command to run, unmeasured, before each run (including warm-ups). */
   prepare?: string;
+  instrumentation?: Instrumentation;
 }
 
 /**
@@ -104,13 +309,14 @@ export interface SeriesOptions extends RunOptions {
  * `warmup` and `prepare` semantics: warm-up runs execute unmeasured first,
  * and `prepare` runs unmeasured before every run, warm-ups included.
  * `ignoreFailure` applies to the benchmarked command only, never to prepare.
+ * Warm-up and prepare runs are never instrumented.
  */
 export async function runSeries(
   command: string,
   timingPath: string,
   options: SeriesOptions,
 ): Promise<MeasuredRun[]> {
-  const { runs, warmup = 0, prepare, ...runOptions } = options;
+  const { runs, warmup = 0, prepare, instrumentation, ...runOptions } = options;
   const prepareOptions = { ...runOptions, ignoreFailure: false };
 
   for (let i = 0; i < warmup; i++) {
@@ -128,7 +334,23 @@ export async function runSeries(
       await runPlain(prepare, prepareOptions);
     }
 
-    results.push(await runMeasured(command, timingPath, runOptions));
+    const runInstrumentation =
+      instrumentation !== undefined
+        ? {
+            ...instrumentation,
+            runDir: path.join(
+              instrumentation.outDir,
+              `run-${String(i).padStart(3, "0")}`,
+            ),
+          }
+        : undefined;
+
+    results.push(
+      await runMeasured(command, timingPath, {
+        ...runOptions,
+        instrumentation: runInstrumentation,
+      }),
+    );
   }
 
   return results;
@@ -236,14 +458,43 @@ async function measureShellSpawnOverhead(): Promise<number> {
   }
 }
 
+interface ExecOutcome {
+  wallSeconds: number;
+  exitCode: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+}
+
+function outcomeFailure(outcome: ExecOutcome): RunFailure | undefined {
+  return outcome.exitCode === 0
+    ? undefined
+    : { exitCode: outcome.exitCode, signal: outcome.signal };
+}
+
+function commandFailedError(outcome: ExecOutcome): CommandFailedError {
+  const reason =
+    outcome.signal !== null
+      ? `was killed by signal ${outcome.signal}`
+      : `exited with code ${String(outcome.exitCode)}`;
+
+  return new CommandFailedError(
+    `Command ${reason}`,
+    outcome.stdout,
+    outcome.stderr,
+  );
+}
+
 // Spawn `bash -c command`, capture (or pass through) its output, and time it.
-// Resolves once the child exited and its output streams closed; the wall
-// timestamp is taken at process exit, before the pipes drain.
+// Resolves once the child exited and its output streams closed — including
+// when the command failed; callers decide what a failure means. Only a spawn
+// error (the command never ran) rejects. The wall timestamp is taken at
+// process exit, before the pipes drain.
 async function execute(
   command: string,
   options: RunOptions,
   sampler?: MemorySampler,
-): Promise<{ wallSeconds: number }> {
+): Promise<ExecOutcome> {
   return new Promise((resolve, reject) => {
     const start = performance.now();
     const child = spawn("bash", ["-c", command], {
@@ -282,23 +533,13 @@ async function execute(
     });
 
     child.on("close", (code, signal) => {
-      if (code === 0 || options.ignoreFailure === true) {
-        resolve({ wallSeconds });
-        return;
-      }
-
-      const reason =
-        signal !== null
-          ? `was killed by signal ${signal}`
-          : `exited with code ${String(code)}`;
-
-      reject(
-        new CommandFailedError(
-          `Command ${reason}`,
-          stdout.toString(),
-          stderr.toString(),
-        ),
-      );
+      resolve({
+        wallSeconds,
+        exitCode: code,
+        signal,
+        stdout: stdout.toString(),
+        stderr: stderr.toString(),
+      });
     });
   });
 }

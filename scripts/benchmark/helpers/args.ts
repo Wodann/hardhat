@@ -22,6 +22,11 @@ export interface BenchArgs {
   runs: number | undefined;
   exportJson: string | undefined;
   e2eCloneDirectory: string;
+  outDir: string | undefined;
+  memInternals: boolean;
+  perfFaults: boolean;
+  perfFaultsPeriod: number | undefined;
+  env: Record<string, string>;
 }
 
 export function resolveAndValidateArgs(args: string[]): BenchArgs | undefined {
@@ -69,6 +74,27 @@ export function resolveAndValidateArgs(args: string[]): BenchArgs | undefined {
 
   const exportJson = getArgValue(args, "--export-json");
 
+  const outDir = getArgValue(args, "--out-dir");
+  const memInternals = args.includes("--mem-internals");
+  const perfFaults = args.includes("--perf-faults");
+
+  const perfFaultsPeriodRaw = getArgValue(args, "--perf-faults-period");
+  const perfFaultsPeriod =
+    perfFaultsPeriodRaw !== undefined
+      ? parseInt(perfFaultsPeriodRaw, 10)
+      : undefined;
+
+  if (
+    perfFaultsPeriodRaw !== undefined &&
+    (perfFaultsPeriod === undefined ||
+      isNaN(perfFaultsPeriod) ||
+      perfFaultsPeriod < 1)
+  ) {
+    throw new Error("--perf-faults-period must be a positive integer");
+  }
+
+  const env = parseEnvPairs(getArgValues(args, "--env"));
+
   let e2eCloneDirectory =
     getArgValue(args, "--e2e-clone-dir") ?? process.env.E2E_CLONE_DIR;
 
@@ -96,11 +122,45 @@ export function resolveAndValidateArgs(args: string[]): BenchArgs | undefined {
     runs,
     exportJson,
     e2eCloneDirectory,
+    outDir,
+    memInternals,
+    perfFaults,
+    perfFaultsPeriod,
+    env,
   };
+}
+
+/** Parse repeatable `--env KEY=VALUE` values (VALUE may contain `=`). */
+export function parseEnvPairs(values: string[]): Record<string, string> {
+  const env: Record<string, string> = {};
+
+  for (const value of values) {
+    const separator = value.indexOf("=");
+
+    if (separator < 1) {
+      throw new Error(`--env expects KEY=VALUE, got ${JSON.stringify(value)}`);
+    }
+
+    env[value.slice(0, separator)] = value.slice(separator + 1);
+  }
+
+  return env;
 }
 
 function getArgValue(args: string[], flag: string): string | undefined {
   const idx = args.indexOf(flag);
 
   return idx !== -1 && idx + 1 < args.length ? args[idx + 1] : undefined;
+}
+
+function getArgValues(args: string[], flag: string): string[] {
+  const values: string[] = [];
+
+  for (let i = 0; i < args.length - 1; i++) {
+    if (args[i] === flag) {
+      values.push(args[i + 1]);
+    }
+  }
+
+  return values;
 }
