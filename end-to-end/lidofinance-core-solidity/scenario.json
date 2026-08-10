@@ -1,0 +1,26 @@
+{
+  "$schema": "../../scripts/end-to-end/schema/scenario.schema.json",
+  "description": "Lido core contracts fork with the Solidity test suite (NomicFoundation/lidofinance-core), used for memory investigations: above default verbosity every test collects stack traces in EDR, driving native memory growth.",
+  "tags": ["external-repo", "solidity-test"],
+  "repo": "NomicFoundation/lidofinance-core",
+  "commit": "3676f65e9efae06ec7423a254593b8582dcac5b2",
+  "packageManager": "yarn",
+  "submodules": false,
+  "preinstall": "./preinstall.sh",
+  "defaultCommand": "npx hardhat test solidity",
+  "benchmark": {
+    "skip": true,
+    "commands": {
+      "cold compile": {
+        "runs": 1,
+        "command": "npx hardhat compile",
+        "prepare": "npx hardhat clean"
+      },
+      "test solidity": {
+        "runs": 1,
+        "command": "npx hardhat test solidity --no-compile --gas-stats",
+        "dependsOn": ["cold compile"]
+      }
+    }
+  }
+}
