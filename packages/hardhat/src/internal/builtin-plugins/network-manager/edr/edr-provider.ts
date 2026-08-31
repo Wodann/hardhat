@@ -304,14 +304,15 @@ export class EdrProvider extends BaseProvider {
     method: string,
     params?: unknown[],
   ): Promise<SuccessfulJsonRpcResponse> {
-    let jsonRpcResponse: JsonRpcResponse;
     let txHash: string | undefined;
 
-    if (typeof edrResponse.data === "string") {
-      jsonRpcResponse = JSON.parse(edrResponse.data);
-    } else {
-      jsonRpcResponse = edrResponse.data;
-    }
+    // `data` is a getter that clones the whole payload out of Rust, so it must
+    // be read exactly once.
+    const responseData = edrResponse.data;
+    const jsonRpcResponse: JsonRpcResponse =
+      typeof responseData === "string"
+        ? JSON.parse(responseData)
+        : responseData;
 
     if (isFailedJsonRpcResponse(jsonRpcResponse)) {
       const responseError = jsonRpcResponse.error;
