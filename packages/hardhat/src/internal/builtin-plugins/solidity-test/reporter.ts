@@ -272,10 +272,12 @@ export async function* testReporter(
         );
       }
       if (reason === undefined || reason === "") {
+        // `failure` is an N-API object whose getters clone, so each is read once.
+        const failureReason = failure.reason;
         reason =
-          failure.reason?.startsWith("FFI is disabled") === true
+          failureReason?.startsWith("FFI is disabled") === true
             ? "FFI is disabled; set `test.solidity.ffi` to `true` in your Hardhat config to allow tests to call external commands"
-            : (failure.reason ?? "Unknown error");
+            : (failureReason ?? "Unknown error");
       }
       yield* output(indenter.t`${colorize("red", `Error: ${reason}`)}\n`);
       // eslint-disable-next-line @typescript-eslint/switch-exhaustiveness-check -- Ignore Cases not matched: undefined
@@ -321,14 +323,15 @@ export async function* testReporter(
         default:
           break;
       }
+      const failureCounterexample = failure.counterexample;
       if (
-        failure.counterexample !== undefined &&
-        failure.counterexample !== null
+        failureCounterexample !== undefined &&
+        failureCounterexample !== null
       ) {
         const counterexamples =
-          "sequence" in failure.counterexample
-            ? failure.counterexample.sequence
-            : [failure.counterexample];
+          "sequence" in failureCounterexample
+            ? failureCounterexample.sequence
+            : [failureCounterexample];
         for (const counterexample of counterexamples) {
           yield* output(indenter.t`Counterexample:\n`);
           indenter.inc();
