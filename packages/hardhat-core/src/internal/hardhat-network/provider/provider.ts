@@ -130,8 +130,6 @@ interface HardhatNetworkProviderConfig {
   enableRip7212: boolean;
 }
 
-class EdrProviderEventAdapter extends EventEmitter {}
-
 type CallOverrideCallback = (
   address: Buffer,
   data: Buffer
@@ -219,9 +217,11 @@ export class EdrProviderWrapper
         ? BigInt(Math.floor(config.initialDate.getTime() / 1000))
         : undefined;
 
-    // To accommodate construction ordering, we need an adapter to forward events
-    // from the EdrProvider callback to the wrapper's listener
-    const eventAdapter = new EdrProviderEventAdapter();
+    // EDR holds `subscriptionCallback` through a threadsafe function, which V8
+    // cannot see through. A strong reference to the wrapper from that callback
+    // would root the wrapper, and with it the provider whose OS thread is only
+    // released once the provider is finalized.
+    let wrapperWeakRef: WeakRef<EdrProviderWrapper> | undefined;
 
     const printLineFn = loggerConfig.printLineFn ?? printLine;
     const replaceLastLineFn = loggerConfig.replaceLastLineFn ?? replaceLastLine;
@@ -303,7 +303,7 @@ export class EdrProviderWrapper
 
     const edrSubscriptionConfig = {
       subscriptionCallback: (event: SubscriptionEvent) => {
-        eventAdapter.emit("ethEvent", event);
+        wrapperWeakRef?.deref()?._ethEventListener(event);
       },
     };
 
@@ -335,11 +335,9 @@ export class EdrProviderWrapper
       chainOverrides
     );
 
-    // Pass through all events from the provider
-    eventAdapter.addListener(
-      "ethEvent",
-      wrapper._ethEventListener.bind(wrapper)
-    );
+    // Assigned after construction, which is why the callback above reaches the
+    // wrapper through a binding rather than capturing it.
+    wrapperWeakRef = new WeakRef(wrapper);
 
     return wrapper;
   }
