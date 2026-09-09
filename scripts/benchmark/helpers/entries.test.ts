@@ -109,11 +109,36 @@ describe("toCpuEntry", () => {
     assert.equal(entry.range, `± ${totals.stddev}`);
   });
 
-  it("carries the mean user/system split in extra", () => {
+  it("renders on the dashboard: per-run totals and statistics in extra", () => {
+    const user = [1.0, 1.2];
+    const system = [0.4, 0.6];
+    const extra = JSON.parse(toCpuEntry("s", "x", user, system).extra);
+
+    assert.deepEqual(
+      extra.times,
+      user.map((u, i) => u + system[i]),
+    );
+    assertChartable(extra);
+  });
+
+  it("carries the user/system split as per-run stats sub-objects", () => {
     const extra = JSON.parse(
       toCpuEntry("s", "x", [1.0, 1.2], [0.4, 0.6]).extra,
     );
 
-    assert.deepEqual(extra, { user: 1.1, system: 0.5 });
+    assert.deepEqual(extra.user, {
+      times: [1.0, 1.2],
+      min: 1.0,
+      max: 1.2,
+      median: 1.1,
+      mean: 1.1,
+    });
+    assert.deepEqual(extra.system, {
+      times: [0.4, 0.6],
+      min: 0.4,
+      max: 0.6,
+      median: 0.5,
+      mean: 0.5,
+    });
   });
 });
