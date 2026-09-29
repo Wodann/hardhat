@@ -23,62 +23,93 @@ export function logCloneDirectoryDefault(): void {
   log(`  ${resolveCloneDirectory(undefined)}`);
 }
 
-export function resolveAndValidateArgs(args: string[]) {
+export const Command = {
+  Init: "init",
+  Exec: "exec",
+  Clean: "clean",
+} as const;
+
+export type Command = (typeof Command)[keyof typeof Command];
+
+const COMMAND_LIST = Object.values(Command).join(", ");
+
+export interface EndToEndArgs {
+  command: Command;
+  e2eCloneDirectory: string;
+  scenarioPath: string;
+  /** The `--command` value for `exec`. Undefined runs the scenario's default. */
+  execCommand: string | undefined;
+  useLocal: UseLocal;
+  forceCheckout: ForceCheckout;
+  forcePublish: ForcePublish;
+}
+
+/**
+ * The parsed arguments, or undefined when the usage text should be printed
+ * instead. Logs the default clone-directory notice once a command is
+ * selected, so a caller must print the usage text before anything else.
+ */
+export function resolveAndValidateArgs(
+  args: string[],
+): EndToEndArgs | undefined {
+  if (isHelpRequested(args)) {
+    return undefined;
+  }
+
+  const valueFlags = ["--scenario", "--command", CLONE_DIR_FLAG];
+  const booleanFlags = ["--use-local", "--force-checkout", "--force-publish"];
+  const commands = parsePositionalArgs(args, valueFlags, booleanFlags).map(
+    parseCommand,
+  );
+
+  if (commands.length === 0) {
+    return undefined;
+  }
+
+  if (commands.length > 1) {
+    throw new Error(`Only one command can be given (one of ${COMMAND_LIST})`);
+  }
+
   const scenarioPathRaw =
     getArgValue(args, "--scenario") ?? process.env.E2E_SCENARIO;
 
-  const scenarioPath =
-    scenarioPathRaw !== undefined
-      ? normalizeScenarioPath(scenarioPathRaw)
-      : undefined;
-
-  const initFlag = args.includes("init");
-  const execFlag = args.includes("exec");
-  const cleanFlag = args.includes("clean");
-
-  const command = getArgValue(args, "--command");
-
-  const useLocal = args.includes("--use-local") ? UseLocal.Yes : UseLocal.No;
-
-  const forceCheckout = args.includes("--force-checkout")
-    ? ForceCheckout.Yes
-    : ForceCheckout.No;
-
-  const forcePublish = args.includes("--force-publish")
-    ? ForcePublish.Yes
-    : ForcePublish.No;
-
-  const givenCloneDir = givenCloneDirectory(args);
-
-  const commandFlagCount = [initFlag, execFlag, cleanFlag].filter(
-    (f) => f,
-  ).length;
-
-  if (commandFlagCount > 1) {
-    throw new Error("Only one command can be set either: init, exec or clean");
-  }
-
-  if (commandFlagCount === 1 && scenarioPath === undefined) {
+  if (scenarioPathRaw === undefined) {
     throw new Error(
       "Missing required --scenario argument e.g. --scenario ./end-to-end/openzeppelin-contracts",
     );
   }
+
+  const givenCloneDir = givenCloneDirectory(args);
 
   if (givenCloneDir === undefined) {
     logCloneDirectoryDefault();
   }
 
   return {
-    initFlag,
-    execFlag,
-    cleanFlag,
+    command: commands[0],
     e2eCloneDirectory: resolveCloneDirectory(givenCloneDir),
-    scenarioPath,
-    command,
-    useLocal,
-    forceCheckout,
-    forcePublish,
+    scenarioPath: normalizeScenarioPath(scenarioPathRaw),
+    execCommand: getArgValue(args, "--command"),
+    useLocal: args.includes("--use-local") ? UseLocal.Yes : UseLocal.No,
+    forceCheckout: args.includes("--force-checkout")
+      ? ForceCheckout.Yes
+      : ForceCheckout.No,
+    forcePublish: args.includes("--force-publish")
+      ? ForcePublish.Yes
+      : ForcePublish.No,
   };
+}
+
+function parseCommand(token: string): Command {
+  for (const command of Object.values(Command)) {
+    if (token === command) {
+      return command;
+    }
+  }
+
+  throw new Error(
+    `unknown command: ${token} (expected one of ${COMMAND_LIST})`,
+  );
 }
 
 export function getArgValue(args: string[], flag: string): string | undefined {
